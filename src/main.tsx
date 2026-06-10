@@ -50,6 +50,7 @@ type OrderRevision = { id: string; revisedBy: string; previousTotal: number; new
 type PaymentRecord = { id: string; method: PaymentMethod; provider: "manual" | "ecpay" | "newebpay" | "tappay"; amount: number; status: PaymentStatus; paidAt?: string };
 type CustomerSnapshot = { taxId: string; companyName: string; contactName: string; shippingAddress: string; shippingDetail: string };
 type Order = { id: string; orderNo: string; customerId: string; customerSnapshot?: CustomerSnapshot; orderStatus: OrderStatus; paymentStatus: PaymentStatus; selectedPaymentMethod: PaymentMethod; items: OrderItem[]; subtotal: number; adjustmentTotal: number; freightTotal: number; grandTotal: number; customerNote: string; adminNote: string; submittedAt: string; confirmedAt?: string; revisions: OrderRevision[]; paymentRecords: PaymentRecord[] };
+type OrderRevisionInput = { items: Pick<OrderItem, "id" | "productId" | "quantity" | "unitPriceSnapshot">[]; adjustmentTotal: number; freightTotal: number; adminNote: string; changeSummary: string };
 type Bootstrap = { customerTiers: CustomerTier[]; users: User[]; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[]; orders: Order[] };
 
 const allCategory = "全部";
@@ -299,6 +300,24 @@ function App() {
     setNotice(`客戶等級 ${tier.name} 已儲存。`);
   }
 
+  async function saveProduct(product: Product) {
+    const result = await apiRequest<{ products: Product[] }>("/api/products", token, { method: "POST", body: JSON.stringify(product) });
+    setData((prev) => prev ? { ...prev, products: result.products } : prev);
+    setNotice(`商品 ${product.name} 已儲存。`);
+  }
+
+  async function savePrice(price: ProductPrice) {
+    const result = await apiRequest<{ prices: ProductPrice[] }>("/api/prices", token, { method: "POST", body: JSON.stringify(price) });
+    setData((prev) => prev ? { ...prev, prices: result.prices } : prev);
+    setNotice("價格設定已儲存。");
+  }
+
+  async function saveVisibilityRule(rule: VisibilityRule) {
+    const result = await apiRequest<{ visibilityRules: VisibilityRule[] }>("/api/visibility-rules", token, { method: "POST", body: JSON.stringify(rule) });
+    setData((prev) => prev ? { ...prev, visibilityRules: result.visibilityRules } : prev);
+    setNotice("商品可見規則已儲存。");
+  }
+
   async function toggleProductOrderable(product: Product, isOrderable: boolean) {
     const result = await apiRequest<{ product: Product }>(`/api/products/${product.id}`, token, {
       method: "PATCH",
@@ -307,10 +326,22 @@ function App() {
     setData((prev) => prev ? { ...prev, products: prev.products.map((entry) => entry.id === product.id ? result.product : entry) } : prev);
   }
 
-  async function reviseOrder(orderId: string) {
-    const result = await apiRequest<{ orders: Order[] }>(`/api/orders/${orderId}/revise`, token, { method: "POST" });
+  async function reviseOrder(orderId: string, revision: OrderRevisionInput) {
+    const result = await apiRequest<{ orders: Order[] }>(`/api/orders/${orderId}/revise`, token, {
+      method: "POST",
+      body: JSON.stringify(revision),
+    });
     setData((prev) => prev ? { ...prev, orders: result.orders } : prev);
     setNotice("已建立訂單修訂紀錄。");
+  }
+
+  async function updateOrderStatus(orderId: string, orderStatus: OrderStatus, adminNote: string) {
+    const result = await apiRequest<{ orders: Order[] }>(`/api/orders/${orderId}/status`, token, {
+      method: "POST",
+      body: JSON.stringify({ orderStatus, adminNote }),
+    });
+    setData((prev) => prev ? { ...prev, orders: result.orders } : prev);
+    setNotice(`訂單狀態已更新為 ${statusText[orderStatus]}。`);
   }
 
   async function acceptRevision(orderId: string) {
@@ -421,12 +452,16 @@ function App() {
             adminTab={adminTab}
             saveUser={saveUser}
             saveTier={saveTier}
+            saveProduct={saveProduct}
+            savePrice={savePrice}
+            saveVisibilityRule={saveVisibilityRule}
             products={appData.products}
             prices={appData.prices}
             rules={appData.visibilityRules}
             orders={appData.orders}
             toggleProductOrderable={toggleProductOrderable}
             reviseOrder={reviseOrder}
+            updateOrderStatus={updateOrderStatus}
             markPaid={markPaid}
             exportOrders={exportOrders}
           />
@@ -677,22 +712,192 @@ function AdminPortal(props: {
   adminTab: "orders" | "products" | "users" | "tiers";
   saveUser: (user: User & { password?: string }) => void;
   saveTier: (tier: CustomerTier & { description?: string }) => void;
+  saveProduct: (product: Product) => void;
+  savePrice: (price: ProductPrice) => void;
+  saveVisibilityRule: (rule: VisibilityRule) => void;
   products: Product[];
   prices: ProductPrice[];
   rules: VisibilityRule[];
   orders: Order[];
   toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
-  reviseOrder: (orderId: string) => void;
+  reviseOrder: (orderId: string, revision: OrderRevisionInput) => void;
+  updateOrderStatus: (orderId: string, orderStatus: OrderStatus, adminNote: string) => void;
   markPaid: (orderId: string) => void;
   exportOrders: () => void;
 }) {
   return (
     <div className="adminGrid">
-      {props.adminTab === "orders" ? <OrderManager users={props.users} orders={props.orders} reviseOrder={props.reviseOrder} markPaid={props.markPaid} exportOrders={props.exportOrders} /> : null}
-      {props.adminTab === "products" ? <ProductRuleManager products={props.products} prices={props.prices} rules={props.rules} toggleProductOrderable={props.toggleProductOrderable} /> : null}
+      {props.adminTab === "orders" ? <OrderReviewManager users={props.users} orders={props.orders} reviseOrder={props.reviseOrder} updateOrderStatus={props.updateOrderStatus} markPaid={props.markPaid} exportOrders={props.exportOrders} /> : null}
+      {props.adminTab === "products" ? <ProductSettingsManager products={props.products} prices={props.prices} rules={props.rules} users={props.users} tiers={props.tiers} saveProduct={props.saveProduct} savePrice={props.savePrice} saveVisibilityRule={props.saveVisibilityRule} toggleProductOrderable={props.toggleProductOrderable} /> : null}
       {props.adminTab === "users" ? <UserManager users={props.users} tiers={props.tiers} saveUser={props.saveUser} /> : null}
       {props.adminTab === "tiers" ? <TierManager tiers={props.tiers} saveTier={props.saveTier} /> : null}
     </div>
+  );
+}
+
+function ProductSettingsManager(props: {
+  products: Product[];
+  prices: ProductPrice[];
+  rules: VisibilityRule[];
+  users: User[];
+  tiers: CustomerTier[];
+  saveProduct: (product: Product) => void;
+  savePrice: (price: ProductPrice) => void;
+  saveVisibilityRule: (rule: VisibilityRule) => void;
+  toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
+}) {
+  const customers = props.users.filter((user) => user.role === "customer");
+  const newProduct = (): Product => ({
+    id: `product-${Date.now()}`,
+    sku: "",
+    name: "",
+    brand: "",
+    series: "",
+    category: "",
+    description: "",
+    image: "",
+    salesUnit: "件",
+    packSize: "",
+    moq: 1,
+    orderIncrement: 1,
+    isOrderable: true,
+    isActive: true,
+  });
+  const newPrice = (): ProductPrice => ({
+    id: "",
+    productId: props.products[0]?.id ?? "",
+    scopeType: "default",
+    scopeId: null,
+    price: 0,
+    currency: "TWD",
+    isActive: true,
+  });
+  const newRule = (): VisibilityRule => ({
+    id: "",
+    productId: props.products[0]?.id ?? "",
+    ruleType: "visible_to_all",
+    scopeId: null,
+    isActive: true,
+  });
+  const [productForm, setProductForm] = useState<Product>(newProduct);
+  const [priceForm, setPriceForm] = useState<ProductPrice>(newPrice);
+  const [ruleForm, setRuleForm] = useState<VisibilityRule>(newRule);
+  const productName = (productId: string) => props.products.find((product) => product.id === productId)?.name ?? productId;
+  const targetName = (type: PriceScope | VisibilityRuleType, scopeId: string | null) => {
+    if (!scopeId) return "全部客戶";
+    if (type === "customer_tier" || type === "visible_to_customer_tier") return props.tiers.find((tier) => tier.id === scopeId)?.name ?? scopeId;
+    return customers.find((user) => user.id === scopeId)?.name ?? scopeId;
+  };
+  const priceScopeText: Record<PriceScope, string> = { default: "預設價格", customer_tier: "客戶等級價格", customer: "指定客戶價格" };
+  const ruleText: Record<VisibilityRuleType, string> = { visible_to_all: "全部客戶可見", visible_to_customer_tier: "指定客戶等級可見", visible_to_customer: "指定客戶可見", hidden_from_customer: "指定客戶隱藏" };
+  const setPriceScope = (scopeType: PriceScope) => setPriceForm({ ...priceForm, scopeType, scopeId: scopeType === "default" ? null : scopeType === "customer_tier" ? props.tiers[0]?.id ?? null : customers[0]?.id ?? null });
+  const setRuleType = (ruleType: VisibilityRuleType) => setRuleForm({ ...ruleForm, ruleType, scopeId: ruleType === "visible_to_all" ? null : ruleType === "visible_to_customer_tier" ? props.tiers[0]?.id ?? null : customers[0]?.id ?? null });
+  const saveProduct = () => {
+    if (!productForm.sku.trim() || !productForm.name.trim()) return;
+    props.saveProduct(productForm);
+    setProductForm(newProduct());
+  };
+  const savePrice = () => {
+    if (!priceForm.productId) return;
+    props.savePrice(priceForm);
+    setPriceForm(newPrice());
+  };
+  const saveRule = () => {
+    if (!ruleForm.productId) return;
+    props.saveVisibilityRule(ruleForm);
+    setRuleForm(newRule());
+  };
+
+  return (
+    <section className="fullSpan">
+      <div className="sectionHeader">
+        <div><h2>商品 / 價格 / 客戶類別設定</h2><p>集中維護商品主檔、下單狀態、價格套用對象與商品可見規則。</p></div>
+        <button onClick={() => setProductForm(newProduct())}><Plus size={18} /> 新增商品</button>
+      </div>
+      <div className="settingsGrid">
+        <div className="adminTable">
+          <div className="tableHead productColumns"><span>SKU</span><span>商品</span><span>下單</span><span>價格</span><span>可見</span><span>操作</span></div>
+          {props.products.map((product) => (
+            <div className="tableRow productColumns" key={product.id}>
+              <strong>{product.sku}</strong>
+              <span>{product.name}<small>{product.brand} / {product.category}</small></span>
+              <label className="switchLabel"><input type="checkbox" checked={product.isOrderable} onChange={(event) => props.toggleProductOrderable(product, event.target.checked)} />{product.isOrderable ? "可下單" : "不可下單"}</label>
+              <span>{props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆</span>
+              <span>{props.rules.filter((rule) => rule.productId === product.id && rule.isActive).length} 筆</span>
+              <button onClick={() => setProductForm(product)}>編輯</button>
+            </div>
+          ))}
+        </div>
+        <div className="editPanel">
+          <h3>{props.products.some((product) => product.id === productForm.id) ? "編輯商品" : "新增商品"}</h3>
+          <label>SKU<input value={productForm.sku} onChange={(event) => setProductForm({ ...productForm, sku: event.target.value })} /></label>
+          <label>商品名稱<input value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} /></label>
+          <div className="formSplit">
+            <label>品牌<input value={productForm.brand} onChange={(event) => setProductForm({ ...productForm, brand: event.target.value })} /></label>
+            <label>系列<input value={productForm.series} onChange={(event) => setProductForm({ ...productForm, series: event.target.value })} /></label>
+          </div>
+          <label>分類<input value={productForm.category} onChange={(event) => setProductForm({ ...productForm, category: event.target.value })} /></label>
+          <label>商品圖片 URL<input value={productForm.image} onChange={(event) => setProductForm({ ...productForm, image: event.target.value })} /></label>
+          <label>描述<textarea value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} /></label>
+          <div className="formSplit">
+            <label>銷售單位<input value={productForm.salesUnit} onChange={(event) => setProductForm({ ...productForm, salesUnit: event.target.value })} /></label>
+            <label>箱入數<input value={productForm.packSize} onChange={(event) => setProductForm({ ...productForm, packSize: event.target.value })} /></label>
+          </div>
+          <div className="formSplit">
+            <label>MOQ<input type="number" min="1" value={productForm.moq} onChange={(event) => setProductForm({ ...productForm, moq: Number(event.target.value) })} /></label>
+            <label>下單倍數<input type="number" min="1" value={productForm.orderIncrement} onChange={(event) => setProductForm({ ...productForm, orderIncrement: Number(event.target.value) })} /></label>
+          </div>
+          <label className="switchLabel"><input type="checkbox" checked={productForm.isOrderable} onChange={(event) => setProductForm({ ...productForm, isOrderable: event.target.checked })} />可下單</label>
+          <label className="switchLabel"><input type="checkbox" checked={productForm.isActive} onChange={(event) => setProductForm({ ...productForm, isActive: event.target.checked })} />啟用商品</label>
+          <button className="primaryAction" onClick={saveProduct}><Save size={18} /> 儲存商品</button>
+        </div>
+      </div>
+      <div className="ruleGrid">
+        <div className="editPanel">
+          <h3>價格設定</h3>
+          <label>商品<select value={priceForm.productId} onChange={(event) => setPriceForm({ ...priceForm, productId: event.target.value })}>{props.products.map((product) => <option key={product.id} value={product.id}>{product.sku} - {product.name}</option>)}</select></label>
+          <label>價格類型<select value={priceForm.scopeType} onChange={(event) => setPriceScope(event.target.value as PriceScope)}>{(Object.keys(priceScopeText) as PriceScope[]).map((scope) => <option key={scope} value={scope}>{priceScopeText[scope]}</option>)}</select></label>
+          {priceForm.scopeType === "customer_tier" ? <label>客戶等級<select value={priceForm.scopeId ?? ""} onChange={(event) => setPriceForm({ ...priceForm, scopeId: event.target.value })}>{props.tiers.map((tier) => <option key={tier.id} value={tier.id}>{tier.name}</option>)}</select></label> : null}
+          {priceForm.scopeType === "customer" ? <label>指定客戶<select value={priceForm.scopeId ?? ""} onChange={(event) => setPriceForm({ ...priceForm, scopeId: event.target.value })}>{customers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label> : null}
+          <label>價格<input type="number" min="0" value={priceForm.price} onChange={(event) => setPriceForm({ ...priceForm, price: Number(event.target.value) })} /></label>
+          <label className="switchLabel"><input type="checkbox" checked={priceForm.isActive} onChange={(event) => setPriceForm({ ...priceForm, isActive: event.target.checked })} />啟用價格</label>
+          <button className="primaryAction" onClick={savePrice}><Save size={18} /> 儲存價格</button>
+        </div>
+        <div className="adminTable compactTable">
+          <div className="tableHead priceColumns"><span>商品</span><span>對象</span><span>價格</span><span>操作</span></div>
+          {props.prices.map((price) => (
+            <div className="tableRow priceColumns" key={price.id}>
+              <span>{productName(price.productId)}</span>
+              <span>{priceScopeText[price.scopeType]}<small>{targetName(price.scopeType, price.scopeId)}</small></span>
+              <strong>{money(price.price)}</strong>
+              <button onClick={() => setPriceForm(price)}>編輯</button>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="ruleGrid">
+        <div className="editPanel">
+          <h3>商品可見 / 客戶類別</h3>
+          <label>商品<select value={ruleForm.productId} onChange={(event) => setRuleForm({ ...ruleForm, productId: event.target.value })}>{props.products.map((product) => <option key={product.id} value={product.id}>{product.sku} - {product.name}</option>)}</select></label>
+          <label>規則<select value={ruleForm.ruleType} onChange={(event) => setRuleType(event.target.value as VisibilityRuleType)}>{(Object.keys(ruleText) as VisibilityRuleType[]).map((rule) => <option key={rule} value={rule}>{ruleText[rule]}</option>)}</select></label>
+          {ruleForm.ruleType === "visible_to_customer_tier" ? <label>客戶等級<select value={ruleForm.scopeId ?? ""} onChange={(event) => setRuleForm({ ...ruleForm, scopeId: event.target.value })}>{props.tiers.map((tier) => <option key={tier.id} value={tier.id}>{tier.name}</option>)}</select></label> : null}
+          {(ruleForm.ruleType === "visible_to_customer" || ruleForm.ruleType === "hidden_from_customer") ? <label>指定客戶<select value={ruleForm.scopeId ?? ""} onChange={(event) => setRuleForm({ ...ruleForm, scopeId: event.target.value })}>{customers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label> : null}
+          <label className="switchLabel"><input type="checkbox" checked={ruleForm.isActive} onChange={(event) => setRuleForm({ ...ruleForm, isActive: event.target.checked })} />啟用規則</label>
+          <button className="primaryAction" onClick={saveRule}><Save size={18} /> 儲存規則</button>
+        </div>
+        <div className="adminTable compactTable">
+          <div className="tableHead visibilityColumns"><span>商品</span><span>規則</span><span>狀態</span><span>操作</span></div>
+          {props.rules.map((rule) => (
+            <div className="tableRow visibilityColumns" key={rule.id}>
+              <span>{productName(rule.productId)}</span>
+              <span>{ruleText[rule.ruleType]}<small>{targetName(rule.ruleType, rule.scopeId)}</small></span>
+              <span>{rule.isActive ? "啟用" : "停用"}</span>
+              <button onClick={() => setRuleForm(rule)}>編輯</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -706,6 +911,167 @@ function ProductRuleManager(props: {
     <section className="fullSpan"><div className="sectionHeader"><div><h2>商品與規則</h2><p>商品可見性與可下單狀態分開管理。</p></div></div>
       <div className="adminTable"><div className="tableHead productColumns"><span>SKU</span><span>商品</span><span>狀態</span><span>價格規則</span><span>可見性</span></div>
         {props.products.map((product) => <div className="tableRow productColumns" key={product.id}><strong>{product.sku}</strong><span>{product.name}</span><label className="switchLabel"><input type="checkbox" checked={product.isOrderable} onChange={(event) => props.toggleProductOrderable(product, event.target.checked)} />{product.isOrderable ? "可下單" : "不可下單"}</label><span>{props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆</span><span>{props.rules.filter((rule) => rule.productId === product.id && rule.isActive).length} 筆</span></div>)}
+      </div>
+    </section>
+  );
+}
+
+function OrderReviewManager(props: {
+  users: User[];
+  orders: Order[];
+  reviseOrder: (orderId: string, revision: OrderRevisionInput) => void;
+  updateOrderStatus: (orderId: string, orderStatus: OrderStatus, adminNote: string) => void;
+  markPaid: (orderId: string) => void;
+  exportOrders: () => void;
+}) {
+  const [selectedId, setSelectedId] = useState(props.orders[0]?.id ?? "");
+  const selectedOrder = props.orders.find((order) => order.id === selectedId) ?? props.orders[0] ?? null;
+  const [draft, setDraft] = useState<OrderRevisionInput | null>(null);
+  const statusActions: { status: OrderStatus; label: string }[] = [
+    { status: "admin_reviewing", label: "審核中" },
+    { status: "confirmed", label: "確認訂單" },
+    { status: "processing", label: "處理中" },
+    { status: "shipped", label: "已出貨" },
+    { status: "completed", label: "完成" },
+    { status: "cancelled", label: "取消" },
+  ];
+
+  function resetDraft(order: Order | null) {
+    if (!order) return setDraft(null);
+    setDraft({
+      items: order.items.map((item) => ({
+        id: item.id,
+        productId: item.productId,
+        quantity: item.quantity,
+        unitPriceSnapshot: item.unitPriceSnapshot,
+      })),
+      adjustmentTotal: order.adjustmentTotal,
+      freightTotal: order.freightTotal,
+      adminNote: order.adminNote,
+      changeSummary: "管理員已更新訂單內容。",
+    });
+  }
+
+  function selectOrder(order: Order) {
+    setSelectedId(order.id);
+    resetDraft(order);
+  }
+
+  if (!selectedOrder) {
+    return (
+      <section className="fullSpan">
+        <div className="sectionHeader"><div><h2>訂單審核</h2><p>尚無訂單，請先以客戶身分送出訂單。</p></div><button onClick={props.exportOrders}><Download size={18} /> 匯出 Excel</button></div>
+      </section>
+    );
+  }
+
+  const revisionDraft = draft ?? {
+    items: selectedOrder.items.map((item) => ({ id: item.id, productId: item.productId, quantity: item.quantity, unitPriceSnapshot: item.unitPriceSnapshot })),
+    adjustmentTotal: selectedOrder.adjustmentTotal,
+    freightTotal: selectedOrder.freightTotal,
+    adminNote: selectedOrder.adminNote,
+    changeSummary: "管理員已更新訂單內容。",
+  };
+  const draftSubtotal = revisionDraft.items.reduce((sum, item) => sum + item.quantity * item.unitPriceSnapshot, 0);
+  const draftTotal = draftSubtotal + revisionDraft.adjustmentTotal + revisionDraft.freightTotal;
+  const customer = props.users.find((user) => user.id === selectedOrder.customerId);
+  const snapshot = selectedOrder.customerSnapshot;
+
+  function updateDraftItem(itemId: string, field: "quantity" | "unitPriceSnapshot", value: number) {
+    setDraft({
+      ...revisionDraft,
+      items: revisionDraft.items.map((item) => item.id === itemId ? { ...item, [field]: value } : item),
+    });
+  }
+
+  function updateDraft(field: "adjustmentTotal" | "freightTotal" | "adminNote" | "changeSummary", value: string | number) {
+    setDraft({ ...revisionDraft, [field]: value });
+  }
+
+  function saveRevision() {
+    props.reviseOrder(selectedOrder.id, revisionDraft);
+  }
+
+  return (
+    <section className="fullSpan">
+      <div className="sectionHeader">
+        <div><h2>訂單審核</h2><p>查看訂單明細、送貨資料、建立修訂紀錄，並推進非付款狀態。</p></div>
+        <button onClick={props.exportOrders}><Download size={18} /> 匯出 Excel</button>
+      </div>
+      <div className="orderReviewGrid">
+        <div className="adminTable orderListTable">
+          <div className="tableHead orderListColumns"><span>訂單</span><span>客戶</span><span>狀態</span><span>總計</span></div>
+          {props.orders.map((order) => (
+            <button className={`tableRow orderListColumns orderSelectRow ${order.id === selectedOrder.id ? "active" : ""}`} key={order.id} onClick={() => selectOrder(order)}>
+              <strong>{order.orderNo}<small>{order.submittedAt}</small></strong>
+              <span>{props.users.find((user) => user.id === order.customerId)?.name ?? order.customerId}</span>
+              <span>{statusText[order.orderStatus]}</span>
+              <strong>{money(order.grandTotal)}</strong>
+            </button>
+          ))}
+        </div>
+
+        <div className="orderDetailPanel">
+          <div className="sectionHeader compactHeader">
+            <div><h3>{selectedOrder.orderNo}</h3><p>{customer?.name ?? selectedOrder.customerId} · {statusText[selectedOrder.orderStatus]}</p></div>
+            <div className="rowActions">
+              {statusActions.map((action) => <button key={action.status} disabled={selectedOrder.orderStatus === action.status} onClick={() => props.updateOrderStatus(selectedOrder.id, action.status, revisionDraft.adminNote)}>{action.label}</button>)}
+              <button onClick={() => props.markPaid(selectedOrder.id)}><CreditCard size={16} /> 已付款</button>
+            </div>
+          </div>
+
+          <div className="detailBlocks">
+            <div className="detailBlock">
+              <h4>客戶資料</h4>
+              <dl className="detailList compactList">
+                <div><dt>統編</dt><dd>{snapshot?.taxId}</dd></div>
+                <div><dt>名稱</dt><dd>{snapshot?.companyName}</dd></div>
+                <div><dt>聯絡人</dt><dd>{snapshot?.contactName}</dd></div>
+                <div><dt>送貨地點</dt><dd>{snapshot?.shippingAddress}</dd></div>
+                <div><dt>送貨詳細</dt><dd>{snapshot?.shippingDetail}</dd></div>
+              </dl>
+            </div>
+            <div className="detailBlock">
+              <h4>訂單備註</h4>
+              <p>{selectedOrder.customerNote || "客戶未填寫備註。"}</p>
+              <label>管理員備註<textarea value={revisionDraft.adminNote} onChange={(event) => updateDraft("adminNote", event.target.value)} /></label>
+            </div>
+          </div>
+
+          <div className="adminTable">
+            <div className="tableHead revisionItemColumns"><span>商品</span><span>數量</span><span>單價</span><span>小計</span></div>
+            {selectedOrder.items.map((item) => {
+              const draftItem = revisionDraft.items.find((entry) => entry.id === item.id) ?? item;
+              return (
+                <div className="tableRow revisionItemColumns" key={item.id}>
+                  <span><strong>{item.skuSnapshot}</strong><small>{item.productNameSnapshot}</small></span>
+                  <input type="number" min="0" value={draftItem.quantity} onChange={(event) => updateDraftItem(item.id, "quantity", Number(event.target.value))} />
+                  <input type="number" min="0" value={draftItem.unitPriceSnapshot} onChange={(event) => updateDraftItem(item.id, "unitPriceSnapshot", Number(event.target.value))} />
+                  <strong>{money(draftItem.quantity * draftItem.unitPriceSnapshot)}</strong>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="revisionSummary">
+            <label>運費<input type="number" min="0" value={revisionDraft.freightTotal} onChange={(event) => updateDraft("freightTotal", Number(event.target.value))} /></label>
+            <label>調整金額<input type="number" value={revisionDraft.adjustmentTotal} onChange={(event) => updateDraft("adjustmentTotal", Number(event.target.value))} /></label>
+            <label>修訂摘要<input value={revisionDraft.changeSummary} onChange={(event) => updateDraft("changeSummary", event.target.value)} /></label>
+            <div className="totalStack"><span>品項小計 {money(draftSubtotal)}</span><strong>修訂後總計 {money(draftTotal)}</strong></div>
+            <button className="primaryAction" onClick={saveRevision}><History size={18} /> 儲存修訂</button>
+          </div>
+
+          <div className="revisionHistory">
+            <h4>修訂紀錄</h4>
+            {selectedOrder.revisions.length === 0 ? <p className="empty">尚無修訂紀錄。</p> : selectedOrder.revisions.map((revision) => (
+              <div className="historyItem" key={revision.id}>
+                <strong>{revision.changeSummary}</strong>
+                <span>{revision.createdAt} · {revision.revisedBy} · {money(revision.previousTotal)} → {money(revision.newTotal)}</span>
+                {revision.customerAcceptanceRequired ? <small>{revision.customerAcceptedAt ? `客戶已接受：${revision.customerAcceptedAt}` : "等待客戶接受修訂"}</small> : <small>無需客戶再次接受</small>}
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );

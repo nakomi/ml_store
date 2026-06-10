@@ -624,11 +624,118 @@ section {
 }
 
 .productColumns {
-  grid-template-columns: 130px minmax(180px, 1fr) 120px 86px 86px;
+  grid-template-columns: 130px minmax(180px, 1fr) 120px 70px 70px 76px;
 }
 
 .orderColumns {
   grid-template-columns: 150px minmax(120px, 1fr) 130px 110px 100px 220px;
+}
+
+.orderReviewGrid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 430px minmax(0, 1fr);
+}
+
+.orderListColumns {
+  grid-template-columns: minmax(130px, 1.2fr) minmax(110px, 1fr) 100px 90px;
+}
+
+.orderSelectRow {
+  background: #ffffff;
+  border-left: 0;
+  border-right: 0;
+  border-top: 1px solid #e5ebee;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+
+.orderSelectRow.active {
+  background: #edf7f8;
+}
+
+.orderDetailPanel {
+  display: grid;
+  gap: 16px;
+}
+
+.compactHeader {
+  align-items: flex-start;
+}
+
+.detailBlocks {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.8fr);
+}
+
+.detailBlock {
+  border: 1px solid #d9e1e5;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.detailBlock h4,
+.revisionHistory h4 {
+  margin: 0;
+}
+
+.detailBlock p {
+  color: #607079;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.compactList div {
+  grid-template-columns: 82px 1fr;
+}
+
+.revisionItemColumns {
+  grid-template-columns: minmax(220px, 1fr) 100px 120px 120px;
+}
+
+.revisionSummary {
+  align-items: end;
+  border: 1px solid #d9e1e5;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 120px 130px minmax(180px, 1fr) 170px 150px;
+  padding: 14px;
+}
+
+.totalStack {
+  display: grid;
+  gap: 4px;
+}
+
+.totalStack span {
+  color: #607079;
+  font-size: 13px;
+}
+
+.revisionHistory {
+  border: 1px solid #d9e1e5;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.historyItem {
+  border-top: 1px solid #e5ebee;
+  display: grid;
+  gap: 4px;
+  padding-top: 10px;
+}
+
+.historyItem span,
+.historyItem small {
+  color: #607079;
 }
 
 .switchLabel {
@@ -678,6 +785,38 @@ section {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(0, 1fr) 340px;
+}
+
+.settingsGrid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  margin-bottom: 18px;
+}
+
+.ruleGrid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 360px minmax(0, 1fr);
+  margin-top: 18px;
+}
+
+.formSplit {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compactTable {
+  align-self: start;
+}
+
+.priceColumns {
+  grid-template-columns: minmax(170px, 1fr) minmax(170px, 1fr) 100px 76px;
+}
+
+.visibilityColumns {
+  grid-template-columns: minmax(180px, 1fr) minmax(210px, 1fr) 80px 76px;
 }
 
 .editPanel {
@@ -844,8 +983,18 @@ section {
   .cartLine,
   .productColumns,
   .orderColumns,
+  .orderReviewGrid,
+  .orderListColumns,
+  .detailBlocks,
+  .revisionItemColumns,
+  .revisionSummary,
   .userColumns,
   .tierColumns,
+  .settingsGrid,
+  .ruleGrid,
+  .formSplit,
+  .priceColumns,
+  .visibilityColumns,
   .productListHead,
   .productListRow,
   .accountGrid,

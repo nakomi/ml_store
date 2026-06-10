@@ -252,6 +252,100 @@ app.post("/api/customer-tiers", requireAuth, requireAdmin, (req, res) => {
   res.json({ tier: savedTier, customerTiers: store.customerTiers });
 });
 
+app.post("/api/products", requireAuth, requireAdmin, (req, res) => {
+  const store = req.store;
+  const product = req.body;
+  if (!product?.sku || !product?.name) {
+    return res.status(400).json({ message: "請填寫商品 SKU 與名稱。" });
+  }
+  const existingBySku = store.products.find((entry) => String(entry.sku).toLowerCase() === String(product.sku).toLowerCase() && entry.id !== product.id);
+  if (existingBySku) return res.status(409).json({ message: "商品 SKU 已存在。" });
+  const existing = store.products.find((entry) => entry.id === product.id);
+  const savedProduct = {
+    id: product.id || makeId("product"),
+    sku: String(product.sku).trim(),
+    name: String(product.name).trim(),
+    brand: String(product.brand ?? "").trim(),
+    series: String(product.series ?? "").trim(),
+    category: String(product.category ?? "").trim(),
+    description: String(product.description ?? "").trim(),
+    image: String(product.image ?? "").trim(),
+    salesUnit: String(product.salesUnit ?? "").trim() || "件",
+    packSize: String(product.packSize ?? "").trim(),
+    moq: Math.max(1, Number(product.moq) || 1),
+    orderIncrement: Math.max(1, Number(product.orderIncrement) || 1),
+    isOrderable: Boolean(product.isOrderable),
+    isActive: Boolean(product.isActive),
+  };
+  store.products = existing
+    ? store.products.map((entry) => entry.id === savedProduct.id ? savedProduct : entry)
+    : [...store.products, savedProduct];
+  writeStore(store);
+  res.json({ product: savedProduct, products: store.products });
+});
+
+app.post("/api/prices", requireAuth, requireAdmin, (req, res) => {
+  const store = req.store;
+  const price = req.body;
+  const scopeTypes = ["default", "customer_tier", "customer"];
+  if (!price?.productId || !scopeTypes.includes(price.scopeType) || Number(price.price) < 0) {
+    return res.status(400).json({ message: "請選擇商品、價格類型並輸入有效價格。" });
+  }
+  const scopeId = price.scopeType === "default" ? null : price.scopeId;
+  if (price.scopeType !== "default" && !scopeId) {
+    return res.status(400).json({ message: "請選擇價格適用對象。" });
+  }
+  if (!store.products.some((entry) => entry.id === price.productId)) {
+    return res.status(404).json({ message: "找不到商品。" });
+  }
+  const existing = store.prices.find((entry) => entry.id === price.id)
+    ?? store.prices.find((entry) => entry.productId === price.productId && entry.scopeType === price.scopeType && entry.scopeId === scopeId);
+  const savedPrice = {
+    id: existing?.id || price.id || makeId("price"),
+    productId: price.productId,
+    scopeType: price.scopeType,
+    scopeId,
+    price: Number(price.price),
+    currency: "TWD",
+    isActive: Boolean(price.isActive),
+  };
+  store.prices = existing
+    ? store.prices.map((entry) => entry.id === savedPrice.id ? savedPrice : entry)
+    : [...store.prices, savedPrice];
+  writeStore(store);
+  res.json({ price: savedPrice, prices: store.prices });
+});
+
+app.post("/api/visibility-rules", requireAuth, requireAdmin, (req, res) => {
+  const store = req.store;
+  const rule = req.body;
+  const ruleTypes = ["visible_to_all", "visible_to_customer_tier", "visible_to_customer", "hidden_from_customer"];
+  if (!rule?.productId || !ruleTypes.includes(rule.ruleType)) {
+    return res.status(400).json({ message: "請選擇商品與可見規則。" });
+  }
+  const scopeId = rule.ruleType === "visible_to_all" ? null : rule.scopeId;
+  if (rule.ruleType !== "visible_to_all" && !scopeId) {
+    return res.status(400).json({ message: "請選擇規則適用對象。" });
+  }
+  if (!store.products.some((entry) => entry.id === rule.productId)) {
+    return res.status(404).json({ message: "找不到商品。" });
+  }
+  const existing = store.visibilityRules.find((entry) => entry.id === rule.id)
+    ?? store.visibilityRules.find((entry) => entry.productId === rule.productId && entry.ruleType === rule.ruleType && entry.scopeId === scopeId);
+  const savedRule = {
+    id: existing?.id || rule.id || makeId("visibility"),
+    productId: rule.productId,
+    ruleType: rule.ruleType,
+    scopeId,
+    isActive: Boolean(rule.isActive),
+  };
+  store.visibilityRules = existing
+    ? store.visibilityRules.map((entry) => entry.id === savedRule.id ? savedRule : entry)
+    : [...store.visibilityRules, savedRule];
+  writeStore(store);
+  res.json({ rule: savedRule, visibilityRules: store.visibilityRules });
+});
+
 app.patch("/api/products/:id", requireAuth, requireAdmin, (req, res) => {
   const store = req.store;
   const product = store.products.find((entry) => entry.id === req.params.id);
@@ -330,9 +424,24 @@ app.post("/api/orders/:id/revise", requireAuth, requireAdmin, (req, res) => {
   const store = req.store;
   const order = store.orders.find((entry) => entry.id === req.params.id);
   if (!order) return res.status(404).json({ message: "找不到訂單。" });
-  const before = order.items;
-  const after = order.items.map((item, index) => index === 0 ? { ...item, quantity: item.quantity + 1, subtotal: (item.quantity + 1) * item.unitPriceSnapshot } : item);
-  const newTotal = after.reduce((sum, item) => sum + item.subtotal, 0) + order.adjustmentTotal + order.freightTotal;
+  const before = order.items.map((item) => ({ ...item }));
+  const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
+  const after = order.items.map((item) => {
+    const requested = requestedItems.find((entry) => entry.id === item.id || entry.productId === item.productId);
+    const quantity = Math.max(0, Number(requested?.quantity ?? item.quantity) || 0);
+    const unitPriceSnapshot = Math.max(0, Number(requested?.unitPriceSnapshot ?? item.unitPriceSnapshot) || 0);
+    return {
+      ...item,
+      quantity,
+      unitPriceSnapshot,
+      subtotal: quantity * unitPriceSnapshot,
+    };
+  }).filter((item) => item.quantity > 0);
+  if (after.length === 0) return res.status(400).json({ message: "訂單至少需要保留一個品項。" });
+  const adjustmentTotal = Number(req.body?.adjustmentTotal ?? order.adjustmentTotal) || 0;
+  const freightTotal = Math.max(0, Number(req.body?.freightTotal ?? order.freightTotal) || 0);
+  const subtotal = after.reduce((sum, item) => sum + item.subtotal, 0);
+  const newTotal = subtotal + adjustmentTotal + freightTotal;
   const totalChanged = newTotal !== order.grandTotal;
   const revision = {
     id: makeId("rev"),
@@ -346,11 +455,30 @@ app.post("/api/orders/:id/revise", requireAuth, requireAdmin, (req, res) => {
     createdAt: now(),
   };
   order.items = after;
-  order.subtotal = after.reduce((sum, item) => sum + item.subtotal, 0);
+  revision.changeSummary = req.body?.changeSummary || "管理員已更新訂單內容。";
+  order.subtotal = subtotal;
+  order.adjustmentTotal = adjustmentTotal;
+  order.freightTotal = freightTotal;
   order.grandTotal = newTotal;
   order.orderStatus = totalChanged ? "revised" : "confirmed";
   order.adminNote = "已完成訂單審核，請客戶確認修訂內容。";
+  order.adminNote = req.body?.adminNote ?? order.adminNote;
   order.revisions = [revision, ...order.revisions];
+  writeStore(store);
+  res.json({ order, orders: store.orders });
+});
+
+app.post("/api/orders/:id/status", requireAuth, requireAdmin, (req, res) => {
+  const store = req.store;
+  const order = store.orders.find((entry) => entry.id === req.params.id);
+  if (!order) return res.status(404).json({ message: "找不到訂單。" });
+  const allowedStatuses = ["admin_reviewing", "confirmed", "processing", "shipped", "completed", "cancelled"];
+  if (!allowedStatuses.includes(req.body?.orderStatus)) {
+    return res.status(400).json({ message: "不支援的訂單狀態。" });
+  }
+  order.orderStatus = req.body.orderStatus;
+  if (req.body.orderStatus === "confirmed" && !order.confirmedAt) order.confirmedAt = now();
+  order.adminNote = req.body?.adminNote ?? order.adminNote;
   writeStore(store);
   res.json({ order, orders: store.orders });
 });
