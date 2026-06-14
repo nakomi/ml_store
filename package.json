@@ -10,6 +10,9 @@
     "db:start": "powershell -ExecutionPolicy Bypass -File scripts/start-postgres.ps1",
     "db:stop": "powershell -ExecutionPolicy Bypass -File scripts/stop-postgres.ps1",
     "db:status": "powershell -ExecutionPolicy Bypass -File scripts/status-postgres.ps1",
+    "deploy:start": "powershell -ExecutionPolicy Bypass -File scripts/deploy-start.ps1",
+    "deploy:stop": "powershell -ExecutionPolicy Bypass -File scripts/deploy-stop.ps1",
+    "start": "node server/index.js",
     "build": "tsc && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },

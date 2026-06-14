@@ -13,5 +13,11 @@ if (-not (Test-Path (Join-Path $dataDir "PG_VERSION"))) {
   throw "PostgreSQL data directory was not initialized at $dataDir"
 }
 
+$ready = & (Join-Path $pgBin "pg_isready.exe") -h 127.0.0.1 -p 5432 -U postgres
+if ($LASTEXITCODE -eq 0) {
+  Write-Output $ready
+  exit 0
+}
+
 & (Join-Path $pgBin "pg_ctl.exe") -D $dataDir -l $logFile -o "-h 127.0.0.1 -p 5432" start
 & (Join-Path $pgBin "pg_isready.exe") -h 127.0.0.1 -p 5432 -U postgres

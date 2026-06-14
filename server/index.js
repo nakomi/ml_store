@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import cors from "cors";
 import express from "express";
 import jwt from "jsonwebtoken";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   acceptRevision,
   createOrder,
@@ -30,6 +32,9 @@ const app = express();
 const port = Number(process.env.API_PORT ?? 3001);
 const host = process.env.API_HOST ?? "0.0.0.0";
 const jwtSecret = process.env.JWT_SECRET ?? "local-dev-secret-change-me";
+const isProduction = process.env.NODE_ENV === "production";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const distDir = path.resolve(__dirname, "..", "dist");
 
 app.use(cors({
   origin(origin, callback) {
@@ -292,6 +297,13 @@ app.post("/api/orders/:id/mark-paid", requireAuth, requireAdmin, asyncRoute(asyn
   const updated = await readStore();
   res.json({ order: updated.orders.find((entry) => entry.id === order.id), orders: updated.orders });
 }));
+
+if (isProduction) {
+  app.use(express.static(distDir));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(distDir, "index.html"));
+  });
+}
 
 app.use((error, req, res, next) => {
   console.error(error);
