@@ -28,7 +28,7 @@ Payment gateway integration is intentionally excluded for now. The current imple
 - Express
 - JSON Web Tokens
 - bcryptjs
-- Local JSON file storage
+- PostgreSQL
 
 ## Requirements
 
@@ -37,12 +37,41 @@ Payment gateway integration is intentionally excluded for now. The current imple
 
 The project currently uses `concurrently@9.x` and an npm override for `shell-quote@1.8.4` so it remains compatible with Node 20 while keeping `npm audit` clean.
 
+PostgreSQL can run on the same server as the Node.js app. The API connects through `DATABASE_URL`.
+
 ## Quick Start
 
 Install dependencies:
 
 ```bash
 npm install
+```
+
+Create a local PostgreSQL database and user:
+
+```sql
+CREATE DATABASE ml_store;
+CREATE USER ml_store_user WITH PASSWORD 'change-this-password';
+GRANT ALL PRIVILEGES ON DATABASE ml_store TO ml_store_user;
+```
+
+For PostgreSQL 15 or newer, also grant schema privileges after connecting to the database:
+
+```sql
+\c ml_store
+GRANT ALL ON SCHEMA public TO ml_store_user;
+```
+
+Create a local `.env` file from the example values:
+
+```bash
+cp .env.example .env
+```
+
+Set `DATABASE_URL` to your local PostgreSQL connection string:
+
+```text
+DATABASE_URL=postgresql://ml_store_user:change-this-password@127.0.0.1:5432/ml_store
 ```
 
 Run the frontend and API together:
@@ -83,17 +112,23 @@ npm run preview
 | Customer | `hotel` | `customer123` |
 | Customer | `salon` | `customer123` |
 
-## Data Storage
+## Database
 
-The backend stores runtime data in:
+The backend uses PostgreSQL through the `pg` driver.
 
-```text
-data/store.json
-```
+On startup, the API creates the required tables if they do not exist:
 
-If the file does not exist, the server seeds sample customers, tiers, products, prices, visibility rules, and an empty order list.
+- `customer_tiers`
+- `app_users`
+- `products`
+- `product_prices`
+- `visibility_rules`
+- `orders`
+- `order_items`
+- `order_revisions`
+- `payment_records`
 
-The `data/` directory is intended for local runtime data and is not committed to git.
+If the database is empty, the API seeds demo customers, tiers, products, prices, and visibility rules. If an old local `data/store.json` file exists, it is used as the seed source for the first database initialization.
 
 ## API Environment
 
@@ -103,8 +138,10 @@ Optional environment variables:
 | --- | --- | --- |
 | `API_PORT` | `3001` | Express API port |
 | `JWT_SECRET` | `local-dev-secret-change-me` | JWT signing secret |
+| `DATABASE_URL` | `postgresql://postgres:postgres@127.0.0.1:5432/ml_store` | PostgreSQL connection string |
+| `PG_POOL_MAX` | `10` | Maximum PostgreSQL pool connections |
 
-For production-like usage, set a strong `JWT_SECRET`.
+For production-like usage, set a strong `JWT_SECRET` and a dedicated PostgreSQL user/password.
 
 ## Main Scripts
 
@@ -128,7 +165,6 @@ Implemented:
 Not implemented yet:
 
 - Real payment gateway integration.
-- Production database persistence.
 - Email notifications.
 - Role/permission matrix beyond admin and customer.
 

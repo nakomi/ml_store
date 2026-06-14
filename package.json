@@ -11,16 +11,18 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^4.5.2",
+    "@vitejs/plugin-react": "^6.0.2",
     "bcryptjs": "^2.4.3",
     "concurrently": "^9.1.0",
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.468.0",
+    "pg": "^8.21.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "^6.0.3"
+    "vite": "^8.0.16"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

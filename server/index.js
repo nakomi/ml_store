@@ -1,146 +1,37 @@
+import "dotenv/config";
 import bcrypt from "bcryptjs";
 import cors from "cors";
 import express from "express";
-import fs from "node:fs";
-import path from "node:path";
 import jwt from "jsonwebtoken";
+import {
+  acceptRevision,
+  createOrder,
+  databaseUrl,
+  findActiveUserById,
+  findActiveUserByLoginId,
+  initDb,
+  makeId,
+  markPaid,
+  nextOrderNo,
+  now,
+  patchProduct,
+  publicUser,
+  readStore,
+  reviseOrder,
+  updateOrderStatus,
+  upsertPrice,
+  upsertProduct,
+  upsertTier,
+  upsertUser,
+  upsertVisibilityRule,
+} from "./db.js";
 
 const app = express();
 const port = Number(process.env.API_PORT ?? 3001);
 const jwtSecret = process.env.JWT_SECRET ?? "local-dev-secret-change-me";
-const dataDir = path.resolve("data");
-const storePath = path.join(dataDir, "store.json");
 
 app.use(cors({ origin: ["http://127.0.0.1:5173", "http://localhost:5173"] }));
 app.use(express.json({ limit: "1mb" }));
-
-function now() {
-  return new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
-}
-
-function makeId(prefix) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function publicUser(user) {
-  const { passwordHash, ...safeUser } = user;
-  return safeUser;
-}
-
-function defaultLoginId(user) {
-  return user.loginId || String(user.email ?? "").split("@")[0] || user.id;
-}
-
-const defaultCustomerProfiles = {
-  "cust-1": {
-    taxId: "24567890",
-    companyName: "沐森旅店股份有限公司",
-    contactName: "林店長",
-    shippingAddress: "台北市中山區南京東路二段 100 號",
-    shippingDetail: "1 樓收貨區，週一至週五 10:00-17:00 可收貨",
-  },
-  "cust-2": {
-    taxId: "87654321",
-    companyName: "青禾沙龍工作室",
-    contactName: "陳小姐",
-    shippingAddress: "新北市板橋區文化路一段 88 號",
-    shippingDetail: "請送至 3 樓櫃台",
-  },
-};
-
-function normalizeStore(store) {
-  let changed = false;
-  store.users = store.users.map((user) => {
-    const defaultProfile = user.role === "customer" ? defaultCustomerProfiles[user.id] ?? {} : {};
-    const normalizedUser = {
-      ...user,
-      loginId: user.loginId || defaultLoginId(user),
-      taxId: user.taxId || defaultProfile.taxId || "",
-      companyName: !user.companyName || user.companyName === user.name ? defaultProfile.companyName || user.name || "" : user.companyName,
-      contactName: user.contactName || defaultProfile.contactName || user.name || "",
-      shippingAddress: user.shippingAddress || defaultProfile.shippingAddress || "",
-      shippingDetail: user.shippingDetail || defaultProfile.shippingDetail || "",
-    };
-    if (JSON.stringify(normalizedUser) !== JSON.stringify(user)) changed = true;
-    return normalizedUser;
-  });
-  return { store, changed };
-}
-
-function seedStore() {
-  const adminHash = bcrypt.hashSync("admin123", 10);
-  const customerHash = bcrypt.hashSync("customer123", 10);
-  return {
-    customerTiers: [
-      { id: "tier-a", code: "A", name: "A 級客戶", isActive: true },
-      { id: "tier-hotel", code: "Hotel", name: "飯店通路", isActive: true },
-      { id: "tier-oem", code: "OEM", name: "OEM 客戶", isActive: true },
-    ],
-    users: [
-      { id: "admin-1", loginId: "admin", name: "工廠管理員", email: "admin@example.com", role: "admin", allowedPaymentMethods: [], isActive: true, passwordHash: adminHash },
-      { id: "cust-1", loginId: "hotel", name: "沐森旅店", email: "hotel@example.com", role: "customer", customerTierId: "tier-hotel", allowedPaymentMethods: ["monthly_billing", "bank_transfer"], isActive: true, taxId: "24567890", companyName: "沐森旅店股份有限公司", contactName: "林店長", shippingAddress: "台北市中山區南京東路二段 100 號", shippingDetail: "1 樓收貨區，週一至週五 10:00-17:00 可收貨", passwordHash: customerHash },
-      { id: "cust-2", loginId: "salon", name: "青禾沙龍", email: "salon@example.com", role: "customer", customerTierId: "tier-a", allowedPaymentMethods: ["bank_transfer", "credit_card"], isActive: true, taxId: "87654321", companyName: "青禾沙龍工作室", contactName: "陳小姐", shippingAddress: "新北市板橋區文化路一段 88 號", shippingDetail: "請送至 3 樓櫃台", passwordHash: customerHash },
-    ],
-    products: [
-      { id: "p1", sku: "SH-001-300", name: "柔順洗髮精 300ml", brand: "ML Lab", series: "植萃護理", category: "洗沐", description: "飯店與沙龍常備的小容量洗髮精。", image: "https://images.unsplash.com/photo-1608248543803-ba4f8c70ae0b?auto=format&fit=crop&w=900&q=80", salesUnit: "瓶", packSize: "24 瓶/箱", moq: 24, orderIncrement: 24, isOrderable: true, isActive: true },
-      { id: "p2", sku: "SH-001-4000", name: "柔順洗髮精 4000ml", brand: "ML Lab", series: "植萃護理", category: "洗沐", description: "補充桶規格，適合大量消耗客戶。", image: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?auto=format&fit=crop&w=900&q=80", salesUnit: "桶", packSize: "4 桶/箱", moq: 4, orderIncrement: 4, isOrderable: true, isActive: true },
-      { id: "p3", sku: "OEM-FACE-001", name: "OEM 溫和潔面乳", brand: "Private Label", series: "OEM", category: "臉部保養", description: "需專案報價，僅對指定客戶顯示。", image: "https://images.unsplash.com/photo-1596755389378-c31d21fd1273?auto=format&fit=crop&w=900&q=80", salesUnit: "支", packSize: "120 支/箱", moq: 120, orderIncrement: 120, isOrderable: false, isActive: true },
-      { id: "p4", sku: "BD-002-500", name: "草本沐浴乳 500ml", brand: "Aroma Pro", series: "草本系列", category: "洗沐", description: "有價格但目前暫停下單。", image: "https://images.unsplash.com/photo-1600857544200-b2f666a9a2ec?auto=format&fit=crop&w=900&q=80", salesUnit: "瓶", packSize: "12 瓶/箱", moq: 12, orderIncrement: 12, isOrderable: false, isActive: true },
-    ],
-    prices: [
-      { id: "pr1", productId: "p1", scopeType: "default", scopeId: null, price: 180, currency: "TWD", isActive: true },
-      { id: "pr2", productId: "p1", scopeType: "customer_tier", scopeId: "tier-hotel", price: 145, currency: "TWD", isActive: true },
-      { id: "pr3", productId: "p2", scopeType: "default", scopeId: null, price: 980, currency: "TWD", isActive: true },
-      { id: "pr4", productId: "p2", scopeType: "customer", scopeId: "cust-1", price: 860, currency: "TWD", isActive: true },
-      { id: "pr5", productId: "p4", scopeType: "default", scopeId: null, price: 260, currency: "TWD", isActive: true },
-    ],
-    visibilityRules: [
-      { id: "vr1", productId: "p1", ruleType: "visible_to_all", scopeId: null, isActive: true },
-      { id: "vr2", productId: "p2", ruleType: "visible_to_customer_tier", scopeId: "tier-hotel", isActive: true },
-      { id: "vr3", productId: "p3", ruleType: "visible_to_customer_tier", scopeId: "tier-oem", isActive: true },
-      { id: "vr4", productId: "p3", ruleType: "visible_to_customer", scopeId: "cust-1", isActive: true },
-      { id: "vr5", productId: "p4", ruleType: "visible_to_all", scopeId: null, isActive: true },
-      { id: "vr6", productId: "p4", ruleType: "hidden_from_customer", scopeId: "cust-2", isActive: true },
-    ],
-    orders: [],
-  };
-}
-
-function readStore() {
-  if (!fs.existsSync(storePath)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(storePath, JSON.stringify(seedStore(), null, 2), "utf8");
-  }
-  const { store, changed } = normalizeStore(JSON.parse(fs.readFileSync(storePath, "utf8")));
-  if (changed) writeStore(store);
-  return store;
-}
-
-function writeStore(store) {
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(storePath, JSON.stringify(store, null, 2), "utf8");
-}
-
-function requireAuth(req, res, next) {
-  const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
-  if (!token) return res.status(401).json({ message: "請先登入。" });
-  try {
-    const payload = jwt.verify(token, jwtSecret);
-    const store = readStore();
-    const user = store.users.find((entry) => entry.id === payload.sub && entry.isActive);
-    if (!user) return res.status(401).json({ message: "帳號不存在或已停用。" });
-    req.user = user;
-    req.store = store;
-    next();
-  } catch {
-    res.status(401).json({ message: "登入已過期，請重新登入。" });
-  }
-}
-
-function requireAdmin(req, res, next) {
-  if (req.user.role !== "admin") return res.status(403).json({ message: "沒有管理員權限。" });
-  next();
-}
 
 function resolveProductPrice(productId, customer, prices) {
   const active = prices.filter((price) => price.productId === productId && price.isActive);
@@ -163,29 +54,50 @@ function canCustomerSeeProduct(product, customer, rules) {
 }
 
 function validateQuantity(product, quantity) {
-  if (quantity < product.moq) return `最低訂購量為 ${product.moq} ${product.salesUnit}`;
-  if ((quantity - product.moq) % product.orderIncrement !== 0) return `訂購數量需符合 ${product.orderIncrement} ${product.salesUnit} 的倍數`;
+  if (quantity < product.moq) return `最小訂購量為 ${product.moq} ${product.salesUnit}`;
+  if ((quantity - product.moq) % product.orderIncrement !== 0) return `訂購數量需以 ${product.orderIncrement} ${product.salesUnit} 為倍數`;
   return "";
 }
 
-app.post("/api/auth/login", (req, res) => {
+async function requireAuth(req, res, next) {
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
+  if (!token) return res.status(401).json({ message: "請先登入。" });
+  try {
+    const payload = jwt.verify(token, jwtSecret);
+    const user = await findActiveUserById(payload.sub);
+    if (!user) return res.status(401).json({ message: "帳號不存在或已停用。" });
+    req.user = user;
+    next();
+  } catch {
+    res.status(401).json({ message: "登入已失效，請重新登入。" });
+  }
+}
+
+function requireAdmin(req, res, next) {
+  if (req.user.role !== "admin") return res.status(403).json({ message: "需要管理員權限。" });
+  next();
+}
+
+function asyncRoute(handler) {
+  return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+}
+
+app.post("/api/auth/login", asyncRoute(async (req, res) => {
   const { loginId, password } = req.body ?? {};
-  const store = readStore();
-  const normalizedLoginId = String(loginId ?? "").trim().toLowerCase();
-  const user = store.users.find((entry) => String(entry.loginId ?? "").toLowerCase() === normalizedLoginId && entry.isActive);
+  const user = await findActiveUserByLoginId(String(loginId ?? "").trim());
   if (!user || !bcrypt.compareSync(String(password ?? ""), user.passwordHash)) {
     return res.status(401).json({ message: "登入 ID 或密碼錯誤。" });
   }
   const token = jwt.sign({ sub: user.id, role: user.role }, jwtSecret, { expiresIn: "8h" });
   res.json({ token, user: publicUser(user) });
-});
+}));
 
 app.get("/api/me", requireAuth, (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
 
-app.get("/api/bootstrap", requireAuth, (req, res) => {
-  const store = req.store;
+app.get("/api/bootstrap", requireAuth, asyncRoute(async (req, res) => {
+  const store = await readStore();
   const orders = req.user.role === "admin" ? store.orders : store.orders.filter((order) => order.customerId === req.user.id);
   res.json({
     customerTiers: store.customerTiers,
@@ -195,169 +107,80 @@ app.get("/api/bootstrap", requireAuth, (req, res) => {
     visibilityRules: store.visibilityRules,
     orders,
   });
-});
+}));
 
-app.post("/api/users", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
+app.post("/api/users", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const store = await readStore();
   const user = req.body;
   if (!user?.name || !user?.loginId || !["admin", "customer"].includes(user.role)) {
     return res.status(400).json({ message: "請填寫名稱、登入 ID 與角色。" });
   }
-  const existingByLoginId = store.users.find((entry) => String(entry.loginId).toLowerCase() === String(user.loginId).toLowerCase() && entry.id !== user.id);
-  if (existingByLoginId) return res.status(409).json({ message: "登入 ID 已被其他帳號使用。" });
-  const existingByEmail = store.users.find((entry) => entry.email.toLowerCase() === user.email.toLowerCase() && entry.id !== user.id);
-  if (user.email && existingByEmail) return res.status(409).json({ message: "Email 已被其他帳號使用。" });
-  const existing = store.users.find((entry) => entry.id === user.id);
-  const savedUser = {
-    id: user.id || makeId("user"),
-    loginId: user.loginId,
-    name: user.name,
-    email: user.email ?? "",
-    role: user.role,
-    customerTierId: user.role === "customer" ? user.customerTierId : undefined,
-    allowedPaymentMethods: user.role === "customer" ? user.allowedPaymentMethods ?? [] : [],
-    taxId: user.role === "customer" ? user.taxId ?? "" : "",
-    companyName: user.role === "customer" ? user.companyName ?? user.name : "",
-    contactName: user.role === "customer" ? user.contactName ?? "" : "",
-    shippingAddress: user.role === "customer" ? user.shippingAddress ?? "" : "",
-    shippingDetail: user.role === "customer" ? user.shippingDetail ?? "" : "",
-    isActive: Boolean(user.isActive),
-    passwordHash: user.password ? bcrypt.hashSync(user.password, 10) : existing?.passwordHash ?? bcrypt.hashSync("changeme123", 10),
-  };
-  store.users = existing ? store.users.map((entry) => entry.id === savedUser.id ? savedUser : entry) : [...store.users, savedUser];
-  writeStore(store);
-  res.json({ user: publicUser(savedUser), users: store.users.map(publicUser) });
-});
+  const loginTaken = store.users.find((entry) => entry.loginId.toLowerCase() === String(user.loginId).toLowerCase() && entry.id !== user.id);
+  if (loginTaken) return res.status(409).json({ message: "登入 ID 已被使用。" });
+  const emailTaken = user.email && store.users.find((entry) => entry.email?.toLowerCase() === String(user.email).toLowerCase() && entry.id !== user.id);
+  if (emailTaken) return res.status(409).json({ message: "Email 已被使用。" });
+  await upsertUser(user);
+  const updated = await readStore();
+  res.json({ users: updated.users.map(publicUser) });
+}));
 
-app.post("/api/customer-tiers", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
+app.post("/api/customer-tiers", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const store = await readStore();
   const tier = req.body;
-  if (!tier?.name || !tier?.code) {
-    return res.status(400).json({ message: "請填寫客戶等級名稱與代碼。" });
-  }
-  const existingByCode = store.customerTiers.find((entry) => String(entry.code).toLowerCase() === String(tier.code).toLowerCase() && entry.id !== tier.id);
-  if (existingByCode) return res.status(409).json({ message: "客戶等級代碼已存在。" });
-  const existing = store.customerTiers.find((entry) => entry.id === tier.id);
-  const savedTier = {
-    id: tier.id || makeId("tier"),
-    code: tier.code,
-    name: tier.name,
-    description: tier.description ?? "",
-    isActive: Boolean(tier.isActive),
-  };
-  store.customerTiers = existing
-    ? store.customerTiers.map((entry) => entry.id === savedTier.id ? savedTier : entry)
-    : [...store.customerTiers, savedTier];
-  writeStore(store);
-  res.json({ tier: savedTier, customerTiers: store.customerTiers });
-});
+  if (!tier?.name || !tier?.code) return res.status(400).json({ message: "請填寫客戶等級名稱與代碼。" });
+  const codeTaken = store.customerTiers.find((entry) => entry.code.toLowerCase() === String(tier.code).toLowerCase() && entry.id !== tier.id);
+  if (codeTaken) return res.status(409).json({ message: "客戶等級代碼已存在。" });
+  await upsertTier(tier);
+  const updated = await readStore();
+  res.json({ customerTiers: updated.customerTiers });
+}));
 
-app.post("/api/products", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
+app.post("/api/products", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const store = await readStore();
   const product = req.body;
-  if (!product?.sku || !product?.name) {
-    return res.status(400).json({ message: "請填寫商品 SKU 與名稱。" });
-  }
-  const existingBySku = store.products.find((entry) => String(entry.sku).toLowerCase() === String(product.sku).toLowerCase() && entry.id !== product.id);
-  if (existingBySku) return res.status(409).json({ message: "商品 SKU 已存在。" });
-  const existing = store.products.find((entry) => entry.id === product.id);
-  const savedProduct = {
-    id: product.id || makeId("product"),
-    sku: String(product.sku).trim(),
-    name: String(product.name).trim(),
-    brand: String(product.brand ?? "").trim(),
-    series: String(product.series ?? "").trim(),
-    category: String(product.category ?? "").trim(),
-    description: String(product.description ?? "").trim(),
-    image: String(product.image ?? "").trim(),
-    salesUnit: String(product.salesUnit ?? "").trim() || "件",
-    packSize: String(product.packSize ?? "").trim(),
-    moq: Math.max(1, Number(product.moq) || 1),
-    orderIncrement: Math.max(1, Number(product.orderIncrement) || 1),
-    isOrderable: Boolean(product.isOrderable),
-    isActive: Boolean(product.isActive),
-  };
-  store.products = existing
-    ? store.products.map((entry) => entry.id === savedProduct.id ? savedProduct : entry)
-    : [...store.products, savedProduct];
-  writeStore(store);
-  res.json({ product: savedProduct, products: store.products });
-});
+  if (!product?.sku || !product?.name) return res.status(400).json({ message: "請填寫商品 SKU 與名稱。" });
+  const skuTaken = store.products.find((entry) => entry.sku.toLowerCase() === String(product.sku).toLowerCase() && entry.id !== product.id);
+  if (skuTaken) return res.status(409).json({ message: "商品 SKU 已存在。" });
+  await upsertProduct(product);
+  const updated = await readStore();
+  res.json({ products: updated.products });
+}));
 
-app.post("/api/prices", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
+app.patch("/api/products/:id", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const product = await patchProduct(req.params.id, req.body);
+  if (!product) return res.status(404).json({ message: "找不到商品。" });
+  res.json({ product });
+}));
+
+app.post("/api/prices", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const store = await readStore();
   const price = req.body;
   const scopeTypes = ["default", "customer_tier", "customer"];
   if (!price?.productId || !scopeTypes.includes(price.scopeType) || Number(price.price) < 0) {
     return res.status(400).json({ message: "請選擇商品、價格類型並輸入有效價格。" });
   }
-  const scopeId = price.scopeType === "default" ? null : price.scopeId;
-  if (price.scopeType !== "default" && !scopeId) {
-    return res.status(400).json({ message: "請選擇價格適用對象。" });
-  }
-  if (!store.products.some((entry) => entry.id === price.productId)) {
-    return res.status(404).json({ message: "找不到商品。" });
-  }
-  const existing = store.prices.find((entry) => entry.id === price.id)
-    ?? store.prices.find((entry) => entry.productId === price.productId && entry.scopeType === price.scopeType && entry.scopeId === scopeId);
-  const savedPrice = {
-    id: existing?.id || price.id || makeId("price"),
-    productId: price.productId,
-    scopeType: price.scopeType,
-    scopeId,
-    price: Number(price.price),
-    currency: "TWD",
-    isActive: Boolean(price.isActive),
-  };
-  store.prices = existing
-    ? store.prices.map((entry) => entry.id === savedPrice.id ? savedPrice : entry)
-    : [...store.prices, savedPrice];
-  writeStore(store);
-  res.json({ price: savedPrice, prices: store.prices });
-});
+  if (price.scopeType !== "default" && !price.scopeId) return res.status(400).json({ message: "請選擇價格適用對象。" });
+  if (!store.products.some((entry) => entry.id === price.productId)) return res.status(404).json({ message: "找不到商品。" });
+  await upsertPrice(price);
+  const updated = await readStore();
+  res.json({ prices: updated.prices });
+}));
 
-app.post("/api/visibility-rules", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
+app.post("/api/visibility-rules", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const store = await readStore();
   const rule = req.body;
   const ruleTypes = ["visible_to_all", "visible_to_customer_tier", "visible_to_customer", "hidden_from_customer"];
-  if (!rule?.productId || !ruleTypes.includes(rule.ruleType)) {
-    return res.status(400).json({ message: "請選擇商品與可見規則。" });
-  }
-  const scopeId = rule.ruleType === "visible_to_all" ? null : rule.scopeId;
-  if (rule.ruleType !== "visible_to_all" && !scopeId) {
-    return res.status(400).json({ message: "請選擇規則適用對象。" });
-  }
-  if (!store.products.some((entry) => entry.id === rule.productId)) {
-    return res.status(404).json({ message: "找不到商品。" });
-  }
-  const existing = store.visibilityRules.find((entry) => entry.id === rule.id)
-    ?? store.visibilityRules.find((entry) => entry.productId === rule.productId && entry.ruleType === rule.ruleType && entry.scopeId === scopeId);
-  const savedRule = {
-    id: existing?.id || rule.id || makeId("visibility"),
-    productId: rule.productId,
-    ruleType: rule.ruleType,
-    scopeId,
-    isActive: Boolean(rule.isActive),
-  };
-  store.visibilityRules = existing
-    ? store.visibilityRules.map((entry) => entry.id === savedRule.id ? savedRule : entry)
-    : [...store.visibilityRules, savedRule];
-  writeStore(store);
-  res.json({ rule: savedRule, visibilityRules: store.visibilityRules });
-});
+  if (!rule?.productId || !ruleTypes.includes(rule.ruleType)) return res.status(400).json({ message: "請選擇商品與可見規則。" });
+  if (rule.ruleType !== "visible_to_all" && !rule.scopeId) return res.status(400).json({ message: "請選擇規則適用對象。" });
+  if (!store.products.some((entry) => entry.id === rule.productId)) return res.status(404).json({ message: "找不到商品。" });
+  await upsertVisibilityRule(rule);
+  const updated = await readStore();
+  res.json({ visibilityRules: updated.visibilityRules });
+}));
 
-app.patch("/api/products/:id", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
-  const product = store.products.find((entry) => entry.id === req.params.id);
-  if (!product) return res.status(404).json({ message: "找不到商品。" });
-  Object.assign(product, req.body);
-  writeStore(store);
-  res.json({ product });
-});
-
-app.post("/api/orders", requireAuth, (req, res) => {
+app.post("/api/orders", requireAuth, asyncRoute(async (req, res) => {
   if (req.user.role !== "customer") return res.status(403).json({ message: "只有客戶可以送出訂單。" });
-  const store = req.store;
+  const store = await readStore();
   const { items, selectedPaymentMethod, customerNote } = req.body ?? {};
   const requiredProfileFields = ["taxId", "companyName", "contactName", "shippingAddress", "shippingDetail"];
   const missingProfile = requiredProfileFields.filter((field) => !String(req.user[field] ?? "").trim());
@@ -392,7 +215,7 @@ app.post("/api/orders", requireAuth, (req, res) => {
   const paymentStatus = selectedPaymentMethod === "monthly_billing" ? "monthly_billing" : "pending";
   const order = {
     id: makeId("order"),
-    orderNo: `B2B-${String(store.orders.length + 1).padStart(5, "0")}`,
+    orderNo: await nextOrderNo(),
     customerId: req.user.id,
     customerSnapshot: {
       taxId: req.user.taxId,
@@ -415,94 +238,58 @@ app.post("/api/orders", requireAuth, (req, res) => {
     revisions: [],
     paymentRecords: selectedPaymentMethod === "bank_transfer" ? [{ id: makeId("pay"), method: "bank_transfer", provider: "manual", amount: subtotal, status: "pending" }] : [],
   };
-  store.orders.unshift(order);
-  writeStore(store);
-  res.status(201).json({ order, orders: store.orders.filter((entry) => entry.customerId === req.user.id) });
-});
+  await createOrder(order);
+  const updated = await readStore();
+  res.status(201).json({ order, orders: updated.orders.filter((entry) => entry.customerId === req.user.id) });
+}));
 
-app.post("/api/orders/:id/revise", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
-  const order = store.orders.find((entry) => entry.id === req.params.id);
-  if (!order) return res.status(404).json({ message: "找不到訂單。" });
-  const before = order.items.map((item) => ({ ...item }));
-  const requestedItems = Array.isArray(req.body?.items) ? req.body.items : [];
-  const after = order.items.map((item) => {
-    const requested = requestedItems.find((entry) => entry.id === item.id || entry.productId === item.productId);
-    const quantity = Math.max(0, Number(requested?.quantity ?? item.quantity) || 0);
-    const unitPriceSnapshot = Math.max(0, Number(requested?.unitPriceSnapshot ?? item.unitPriceSnapshot) || 0);
-    return {
-      ...item,
-      quantity,
-      unitPriceSnapshot,
-      subtotal: quantity * unitPriceSnapshot,
-    };
-  }).filter((item) => item.quantity > 0);
-  if (after.length === 0) return res.status(400).json({ message: "訂單至少需要保留一個品項。" });
-  const adjustmentTotal = Number(req.body?.adjustmentTotal ?? order.adjustmentTotal) || 0;
-  const freightTotal = Math.max(0, Number(req.body?.freightTotal ?? order.freightTotal) || 0);
-  const subtotal = after.reduce((sum, item) => sum + item.subtotal, 0);
-  const newTotal = subtotal + adjustmentTotal + freightTotal;
-  const totalChanged = newTotal !== order.grandTotal;
-  const revision = {
-    id: makeId("rev"),
-    revisedBy: req.user.name,
-    previousTotal: order.grandTotal,
-    newTotal,
-    changeSummary: "管理員調整第一項商品數量，系統已重新計算總額。",
-    beforeSnapshot: before,
-    afterSnapshot: after,
-    customerAcceptanceRequired: totalChanged,
-    createdAt: now(),
-  };
-  order.items = after;
-  revision.changeSummary = req.body?.changeSummary || "管理員已更新訂單內容。";
-  order.subtotal = subtotal;
-  order.adjustmentTotal = adjustmentTotal;
-  order.freightTotal = freightTotal;
-  order.grandTotal = newTotal;
-  order.orderStatus = totalChanged ? "revised" : "confirmed";
-  order.adminNote = "已完成訂單審核，請客戶確認修訂內容。";
-  order.adminNote = req.body?.adminNote ?? order.adminNote;
-  order.revisions = [revision, ...order.revisions];
-  writeStore(store);
-  res.json({ order, orders: store.orders });
-});
-
-app.post("/api/orders/:id/status", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
-  const order = store.orders.find((entry) => entry.id === req.params.id);
-  if (!order) return res.status(404).json({ message: "找不到訂單。" });
-  const allowedStatuses = ["admin_reviewing", "confirmed", "processing", "shipped", "completed", "cancelled"];
-  if (!allowedStatuses.includes(req.body?.orderStatus)) {
-    return res.status(400).json({ message: "不支援的訂單狀態。" });
+app.post("/api/orders/:id/revise", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  try {
+    const revision = await reviseOrder(req.params.id, req.body, req.user.name);
+    if (!revision) return res.status(404).json({ message: "找不到訂單。" });
+    const updated = await readStore();
+    res.json({ orders: updated.orders });
+  } catch (error) {
+    res.status(400).json({ message: error.message });
   }
-  order.orderStatus = req.body.orderStatus;
-  if (req.body.orderStatus === "confirmed" && !order.confirmedAt) order.confirmedAt = now();
-  order.adminNote = req.body?.adminNote ?? order.adminNote;
-  writeStore(store);
-  res.json({ order, orders: store.orders });
-});
+}));
 
-app.post("/api/orders/:id/accept-revision", requireAuth, (req, res) => {
-  const store = req.store;
-  const order = store.orders.find((entry) => entry.id === req.params.id && entry.customerId === req.user.id);
+app.post("/api/orders/:id/status", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const allowedStatuses = ["admin_reviewing", "confirmed", "processing", "shipped", "completed", "cancelled"];
+  if (!allowedStatuses.includes(req.body?.orderStatus)) return res.status(400).json({ message: "不支援的訂單狀態。" });
+  await updateOrderStatus(req.params.id, req.body.orderStatus, req.body?.adminNote);
+  const updated = await readStore();
+  const order = updated.orders.find((entry) => entry.id === req.params.id);
   if (!order) return res.status(404).json({ message: "找不到訂單。" });
-  order.orderStatus = "customer_accepted_revision";
-  if (order.revisions[0]) order.revisions[0].customerAcceptedAt = now();
-  writeStore(store);
-  res.json({ order, orders: store.orders.filter((entry) => entry.customerId === req.user.id) });
-});
+  res.json({ order, orders: updated.orders });
+}));
 
-app.post("/api/orders/:id/mark-paid", requireAuth, requireAdmin, (req, res) => {
-  const store = req.store;
+app.post("/api/orders/:id/accept-revision", requireAuth, asyncRoute(async (req, res) => {
+  await acceptRevision(req.params.id, req.user.id);
+  const updated = await readStore();
+  const order = updated.orders.find((entry) => entry.id === req.params.id && entry.customerId === req.user.id);
+  if (!order) return res.status(404).json({ message: "找不到訂單。" });
+  res.json({ order, orders: updated.orders.filter((entry) => entry.customerId === req.user.id) });
+}));
+
+app.post("/api/orders/:id/mark-paid", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const store = await readStore();
   const order = store.orders.find((entry) => entry.id === req.params.id);
   if (!order) return res.status(404).json({ message: "找不到訂單。" });
-  order.paymentStatus = "paid";
-  order.paymentRecords.push({ id: makeId("pay"), method: order.selectedPaymentMethod, provider: "manual", amount: order.grandTotal, status: "paid", paidAt: now() });
-  writeStore(store);
-  res.json({ order, orders: store.orders });
+  await markPaid(order.id, order.selectedPaymentMethod, order.grandTotal);
+  const updated = await readStore();
+  res.json({ order: updated.orders.find((entry) => entry.id === order.id), orders: updated.orders });
+}));
+
+app.use((error, req, res, next) => {
+  console.error(error);
+  res.status(500).json({ message: "伺服器發生錯誤，請稍後再試。" });
 });
+
+await initDb();
 
 app.listen(port, "127.0.0.1", () => {
+  const safeUrl = databaseUrl.replace(/:\/\/([^:]+):([^@]+)@/, "://$1:***@");
   console.log(`B2B Store API listening on http://127.0.0.1:${port}`);
+  console.log(`PostgreSQL: ${safeUrl}`);
 });
