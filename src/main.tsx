@@ -7,14 +7,19 @@ import {
   Eye,
   Filter,
   History,
+  LayoutGrid,
+  List as ListIcon,
   LogIn,
+  Menu,
   Package,
   Plus,
   Save,
   Search,
   Settings,
   ShoppingCart,
+  Trash2,
   UserRound,
+  X,
 } from "lucide-react";
 import "./styles.css";
 
@@ -169,19 +174,21 @@ function App() {
   const [token, setToken] = useState(() => localStorage.getItem("b2b-token"));
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [data, setData] = useState<Bootstrap | null>(null);
-  const [view, setView] = useState<"customer" | "admin">("customer");
+  const [view, setView] = useState<"customer" | "admin" | "account">("customer");
   const [adminTab, setAdminTab] = useState<"orders" | "products" | "users" | "tiers">("orders");
   const [notice, setNotice] = useState("請登入後開始使用。");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState(allCategory);
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>("bank_transfer");
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>("credit_card");
   const [customerNote, setCustomerNote] = useState("");
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [checkoutStep, setCheckoutStep] = useState<"cart" | "confirm" | "thankyou">("cart");
   const [agreedToTerms, setAgreedToTerms] = useState(false);
   const [submittedOrder, setSubmittedOrder] = useState<Order | null>(null);
   const [catalogView, setCatalogView] = useState<"grid" | "list">("grid");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [cartOpen, setCartOpen] = useState(false);
 
   async function loadBootstrap(authToken = token) {
     if (!authToken) return;
@@ -194,7 +201,7 @@ function App() {
       .then(({ user }) => {
         setCurrentUser(user);
         setView(user.role === "admin" ? "admin" : "customer");
-        setSelectedPaymentMethod(user.allowedPaymentMethods[0] ?? "bank_transfer");
+        setSelectedPaymentMethod("credit_card");
         return loadBootstrap(token);
       })
       .catch(() => {
@@ -232,7 +239,7 @@ function App() {
     .filter((product) => category === allCategory || product.category === category)
     .filter((product) => {
       const keyword = query.trim().toLowerCase();
-      return !keyword || [product.sku, product.name, product.brand, product.series].some((value) => value.toLowerCase().includes(keyword));
+      return !keyword || [product.sku, product.name, product.brand].some((value) => value.toLowerCase().includes(keyword));
     });
   const categories = [allCategory, ...Array.from(new Set(appData.products.map((product) => product.category)))];
   const cartRows = cart.map((item) => {
@@ -254,6 +261,7 @@ function App() {
       return [...items, { productId: product.id, quantity: product.moq }];
     });
     setCheckoutStep("cart");
+    setCartOpen(true);
     setNotice(`${product.name} 已加入購物車。`);
   }
 
@@ -277,7 +285,7 @@ function App() {
     if (!agreedToTerms) return setNotice("請先勾選同意訂購條款。");
     const result = await apiRequest<{ order: Order; orders: Order[] }>("/api/orders", token, {
       method: "POST",
-      body: JSON.stringify({ items: cart, selectedPaymentMethod, customerNote }),
+      body: JSON.stringify({ items: cart, selectedPaymentMethod: "credit_card", customerNote }),
     });
     setData((prev) => prev ? { ...prev, orders: result.orders } : prev);
     setSubmittedOrder(result.order);
@@ -285,7 +293,16 @@ function App() {
     setCustomerNote("");
     setAgreedToTerms(false);
     setCheckoutStep("thankyou");
+    setCartOpen(false);
     setNotice("訂單已送出，等待管理員確認。");
+  }
+
+  async function saveSelfProfile(profile: User & { password?: string }) {
+    const result = await apiRequest<{ user: User }>("/api/me", token, { method: "PATCH", body: JSON.stringify(profile) });
+    setCurrentUser(result.user);
+    setSelectedPaymentMethod("credit_card");
+    setData((prev) => prev ? { ...prev, users: prev.users.map((user) => user.id === result.user.id ? result.user : user) } : prev);
+    setNotice("帳號資料已更新。");
   }
 
   async function saveUser(user: User & { password?: string }) {
@@ -389,16 +406,18 @@ function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <div className="brand"><Package aria-hidden /><div><strong>工廠 B2B 訂購</strong><span>客戶專屬型錄與價格</span></div></div>
+      <aside className={`sidebar ${mobileMenuOpen ? "open" : ""}`}>
+        <div className="brand"><Package aria-hidden /><div><strong>凌宇訂貨系統</strong><span>客戶專屬型錄與單價</span></div></div>
+        <button className="mobileMenuButton" onClick={() => setMobileMenuOpen((open) => !open)} aria-label={mobileMenuOpen ? "收合選單" : "展開選單"}>{mobileMenuOpen ? <X size={18} /> : <Menu size={18} />}</button>
         <nav>
-          <button className={view === "customer" ? "active" : ""} onClick={() => setView("customer")}><ShoppingCart size={18} /> 客戶訂購</button>
+          <button className={view === "customer" ? "active" : ""} onClick={() => { setView("customer"); setMobileMenuOpen(false); }}><ShoppingCart size={18} /> 客戶訂購</button>
+          <button className={view === "account" ? "active" : ""} onClick={() => { setView("account"); setMobileMenuOpen(false); }}><UserRound size={18} /> 我的帳號</button>
           {currentUser.role === "admin" ? <>
             <div className="sideNavLabel">管理後台</div>
-            <button className={view === "admin" && adminTab === "orders" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("orders"); }}><Settings size={18} /> 訂單審核</button>
-            <button className={view === "admin" && adminTab === "products" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("products"); }}><Package size={18} /> 商品規則</button>
-            <button className={view === "admin" && adminTab === "users" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("users"); }}><UserRound size={18} /> 帳號管理</button>
-            <button className={view === "admin" && adminTab === "tiers" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("tiers"); }}><Filter size={18} /> 客戶等級</button>
+            <button className={view === "admin" && adminTab === "orders" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("orders"); setMobileMenuOpen(false); }}><Settings size={18} /> 訂單審核</button>
+            <button className={view === "admin" && adminTab === "products" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("products"); setMobileMenuOpen(false); }}><Package size={18} /> 商品規則</button>
+            <button className={view === "admin" && adminTab === "users" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("users"); setMobileMenuOpen(false); }}><UserRound size={18} /> 帳號管理</button>
+            <button className={view === "admin" && adminTab === "tiers" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("tiers"); setMobileMenuOpen(false); }}><Filter size={18} /> 客戶等級</button>
           </> : null}
         </nav>
         <div className="account">
@@ -409,10 +428,12 @@ function App() {
       </aside>
       <main>
         <header className="topbar">
-          <div><p className="eyebrow">{roleText[currentUser.role]}</p><h1>{view === "admin" ? adminTitle(adminTab) : "商品訂購"}</h1></div>
+          <div><p className="eyebrow">{roleText[currentUser.role]}</p><h1>{view === "admin" ? adminTitle(adminTab) : view === "account" ? "我的帳號" : "商品訂購"}</h1></div>
           <div className="notice"><Bell size={18} /><span>{notice}</span></div>
         </header>
-        {view === "customer" ? (
+        {view === "account" ? (
+          <CustomerAccountPage user={currentUser} orders={appData.orders.filter((order) => order.customerId === currentUser.id)} saveProfile={saveSelfProfile} />
+        ) : view === "customer" ? (
           <CustomerPortal
             products={visibleProducts}
             customer={customer}
@@ -444,6 +465,8 @@ function App() {
             orders={appData.orders.filter((order) => order.customerId === customer.id)}
             acceptRevision={acceptRevision}
             canOrder={currentUser.role === "customer"}
+            cartOpen={cartOpen}
+            setCartOpen={setCartOpen}
           />
         ) : (
           <AdminPortal
@@ -467,7 +490,7 @@ function App() {
           />
         )}
       </main>
-      {selectedProduct ? <ProductDetailModal product={selectedProduct} customer={customer} prices={appData.prices} addToCart={addToCart} close={() => setSelectedProduct(null)} canOrder={currentUser.role === "customer"} /> : null}
+      {selectedProduct ? <CleanProductDetailModal product={selectedProduct} customer={customer} prices={appData.prices} addToCart={addToCart} close={() => setSelectedProduct(null)} canOrder={currentUser.role === "customer"} /> : null}
     </div>
   );
 }
@@ -546,6 +569,57 @@ function CustomerInfo(props: { customer: User }) {
   );
 }
 
+function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: (user: User & { password?: string }) => void }) {
+  const [editing, setEditing] = useState<User & { password?: string }>({ ...props.user, password: "" });
+
+  useEffect(() => {
+    setEditing({ ...props.user, password: "" });
+  }, [props.user]);
+
+  function save() {
+    if (!editing.name.trim()) return;
+    props.saveProfile(editing);
+  }
+
+  return (
+    <div className="accountPage">
+      <section>
+        <div className="sectionHeader"><div><h2>帳號資料</h2><p>修改公司資訊、聯絡人與送貨地點。</p></div></div>
+        <div className="profileForm">
+          <label>登入 ID<input value={editing.loginId} disabled /></label>
+          <label>名稱<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
+          <label>Email<input value={editing.email} onChange={(event) => setEditing({ ...editing, email: event.target.value })} /></label>
+          <label>新密碼<input type="password" value={editing.password ?? ""} onChange={(event) => setEditing({ ...editing, password: event.target.value })} placeholder="不變更請留空" /></label>
+          {editing.role === "customer" ? <>
+            <label>統編<input value={editing.taxId ?? ""} onChange={(event) => setEditing({ ...editing, taxId: event.target.value })} /></label>
+            <label>公司名稱<input value={editing.companyName ?? ""} onChange={(event) => setEditing({ ...editing, companyName: event.target.value })} /></label>
+            <label>聯絡人<input value={editing.contactName ?? ""} onChange={(event) => setEditing({ ...editing, contactName: event.target.value })} /></label>
+            <label>送貨地點<input value={editing.shippingAddress ?? ""} onChange={(event) => setEditing({ ...editing, shippingAddress: event.target.value })} /></label>
+            <label className="wideField">送貨詳細<textarea value={editing.shippingDetail ?? ""} onChange={(event) => setEditing({ ...editing, shippingDetail: event.target.value })} /></label>
+            <div className="paymentNotice"><strong>付款方式</strong><span>信用卡</span><small>付款串接尚未啟用，訂單會先送出等待後續處理。</small></div>
+          </> : null}
+        </div>
+        <button className="primaryAction" onClick={save}><Save size={18} /> 儲存帳號資料</button>
+      </section>
+      <section>
+        <div className="sectionHeader"><div><h2>過去訂單</h2><p>查看此帳號送出的訂單紀錄。</p></div></div>
+        {props.orders.length === 0 ? <p className="empty">尚無訂單紀錄。</p> : (
+          <div className="orderHistoryList">
+            {props.orders.map((order) => (
+              <div className="orderHistoryItem" key={order.id}>
+                <div><strong>{order.orderNo}</strong><span>{order.submittedAt}</span></div>
+                <span>{statusText[order.orderStatus]}</span>
+                <span>{paymentText[order.paymentStatus]}</span>
+                <strong>{money(order.grandTotal)}</strong>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function CustomerPortal(props: {
   products: Product[];
   customer: User;
@@ -577,6 +651,8 @@ function CustomerPortal(props: {
   orders: Order[];
   acceptRevision: (orderId: string) => void;
   canOrder: boolean;
+  cartOpen: boolean;
+  setCartOpen: (open: boolean) => void;
 }) {
   return (
     <div className="workspace">
@@ -587,14 +663,20 @@ function CustomerPortal(props: {
             <label className="inputWithIcon"><Search size={17} /><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="搜尋 SKU、品名、品牌" /></label>
             <label className="inputWithIcon select"><Filter size={17} /><select value={props.category} onChange={(event) => props.setCategory(event.target.value)}>{props.categories.map((name) => <option key={name}>{name}</option>)}</select></label>
             <div className="segmentedControl" aria-label="商品檢視模式">
-              <button className={props.catalogView === "grid" ? "active" : ""} onClick={() => props.setCatalogView("grid")}>Grid</button>
-              <button className={props.catalogView === "list" ? "active" : ""} onClick={() => props.setCatalogView("list")}>List</button>
+              <button className={props.catalogView === "grid" ? "active" : ""} onClick={() => props.setCatalogView("grid")} aria-label="Grid view" title="Grid view"><LayoutGrid size={17} /></button>
+              <button className={props.catalogView === "list" ? "active" : ""} onClick={() => props.setCatalogView("list")} aria-label="List view" title="List view"><ListIcon size={17} /></button>
             </div>
           </div>
         </div>
-        {props.catalogView === "list" ? <ProductList {...props} /> : <ProductGrid {...props} />}
+        {props.catalogView === "list" ? <CleanProductList {...props} /> : <CleanProductGrid {...props} />}
       </section>
-      <aside className="rightPanel">
+      <button className="cartFab" onClick={() => props.setCartOpen(true)} aria-label="開啟購物車">
+        <ShoppingCart size={18} />
+        <span>{props.cartRows.length}</span>
+      </button>
+      {props.cartOpen ? <div className="cartBackdrop" onClick={() => props.setCartOpen(false)} /> : null}
+      <aside className={`cartDrawer ${props.cartOpen ? "open" : ""}`}>
+        <button className="drawerClose" onClick={() => props.setCartOpen(false)} aria-label="關閉購物車"><X size={16} /></button>
         {props.checkoutStep === "confirm" ? <ConfirmPanel {...props} /> : props.checkoutStep === "thankyou" ? <ThankYouPanel order={props.submittedOrder} customer={props.customer} back={() => props.setCheckoutStep("cart")} /> : <CartPanel {...props} />}
         <section>
           <h2>訂單紀錄</h2>
@@ -606,6 +688,54 @@ function CustomerPortal(props: {
           ))}
         </section>
       </aside>
+    </div>
+  );
+}
+
+function CleanProductGrid(props: Parameters<typeof CustomerPortal>[0]) {
+  return (
+    <div className="productGrid">
+      {props.products.map((product) => {
+        const price = resolveProductPrice(product.id, props.customer, props.prices);
+        const canAdd = props.canOrder && product.isOrderable && price !== null;
+        return (
+          <article className="productCard" key={product.id}>
+            <button className="imageButton" onClick={() => props.openDetail(product)} aria-label={`查看 ${product.name}`}><img src={product.image} alt={product.name} /></button>
+            <div className="productBody">
+              <div className="sku">{product.sku} · {product.brand}</div>
+              <button className="productTitleButton" onClick={() => props.openDetail(product)}>{product.name}</button>
+              <p>{product.description}</p>
+              <div className="meta"><span>{product.packSize}</span></div>
+              <div className="cardFooter">
+                <div><span className="priceLabel">單價</span><strong>{price === null ? "請洽業務" : money(price)}</strong></div>
+                <div className="inlineActions">
+                  <button className="iconButton" disabled={!canAdd} onClick={() => props.addToCart(product)} aria-label={canAdd ? "加入購物車" : "請洽業務"} title={canAdd ? "加入購物車" : "請洽業務"}><ShoppingCart size={17} /></button>
+                </div>
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function CleanProductList(props: Parameters<typeof CustomerPortal>[0]) {
+  return (
+    <div className="productList">
+      {props.products.map((product) => {
+        const price = resolveProductPrice(product.id, props.customer, props.prices);
+        const canAdd = props.canOrder && product.isOrderable && price !== null;
+        return (
+          <div className="productListRow" key={product.id}>
+            <span>{product.moq} {product.salesUnit}</span>
+            <button className="productNameButton" onClick={() => props.openDetail(product)}><strong>{product.name}</strong><small>{product.sku} · {product.brand}</small></button>
+            <span>{product.packSize}</span>
+            <strong>{price === null ? "請洽業務" : money(price)}</strong>
+            <div className="rowActions"><button className="iconButton" disabled={!canAdd} onClick={() => props.addToCart(product)} aria-label={canAdd ? "加入購物車" : "請洽業務"} title={canAdd ? "加入購物車" : "請洽業務"}><ShoppingCart size={17} /></button></div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -665,11 +795,11 @@ function CartPanel(props: Parameters<typeof CustomerPortal>[0]) {
         <div className="cartLine" key={row.product.id}>
           <div><strong>{row.product.name}</strong><span>{row.product.sku}</span></div>
           <input type="number" min={row.product.moq} step={row.product.orderIncrement} value={row.quantity} onChange={(event) => props.updateCart(row.product.id, Number(event.target.value))} />
-          <b>{money(row.subtotal)}</b><button className="iconButton" onClick={() => props.setCart((items) => items.filter((item) => item.productId !== row.product.id))}>刪除</button>
+          <b>{money(row.subtotal)}</b><button className="iconButton" onClick={() => props.setCart((items) => items.filter((item) => item.productId !== row.product.id))} aria-label="刪除" title="刪除"><Trash2 size={16} /></button>
         </div>
       ))}
       <div className="totalRow"><span>總計</span><strong>{money(props.cartTotal)}</strong></div>
-      <label>付款方式<select disabled={!props.canOrder} value={props.selectedPaymentMethod} onChange={(event) => props.setSelectedPaymentMethod(event.target.value as PaymentMethod)}>{props.customer.allowedPaymentMethods.map((method) => <option value={method} key={method}>{methodText[method]}</option>)}</select></label>
+      <div className="paymentNotice"><strong>付款方式</strong><span>信用卡</span><small>付款功能尚未串接，訂單會先送出等待後續處理。</small></div>
       <label>客戶備註<textarea disabled={!props.canOrder} value={props.customerNote} onChange={(event) => props.setCustomerNote(event.target.value)} placeholder="出貨、對帳或其他備註" /></label>
       <button className="primaryAction" disabled={!props.canOrder || props.cartRows.length === 0} onClick={props.goToConfirm}><LogIn size={18} /> 前往確認</button>
     </section>
@@ -713,6 +843,34 @@ function ThankYouPanel(props: { order: Order | null; customer: User; back: () =>
       </div>
       <button className="primaryAction" onClick={props.back}>回到商品清單</button>
     </section>
+  );
+}
+
+function CleanProductDetailModal(props: { product: Product; customer: User; prices: ProductPrice[]; addToCart: (product: Product) => void; close: () => void; canOrder: boolean }) {
+  const price = resolveProductPrice(props.product.id, props.customer, props.prices);
+  const canAdd = props.canOrder && props.product.isOrderable && price !== null;
+  return (
+    <div className="modalBackdrop" role="dialog" aria-modal="true">
+      <div className="detailModal">
+        <button className="modalClose" onClick={props.close}>關閉</button>
+        <img src={props.product.image} alt={props.product.name} />
+        <div className="detailContent">
+          <div className="sku">{props.product.sku}</div>
+          <h2>{props.product.name}</h2>
+          <p>{props.product.description}</p>
+          <dl className="detailList">
+            <div><dt>品牌</dt><dd>{props.product.brand}</dd></div>
+            <div><dt>分類</dt><dd>{props.product.category}</dd></div>
+            <div><dt>銷售單位</dt><dd>{props.product.salesUnit}</dd></div>
+            <div><dt>包裝規格</dt><dd>{props.product.packSize}</dd></div>
+            <div><dt>MOQ</dt><dd>{props.product.moq} {props.product.salesUnit}</dd></div>
+            <div><dt>訂購倍數</dt><dd>{props.product.orderIncrement} {props.product.salesUnit}</dd></div>
+            <div><dt>單價</dt><dd>{price === null ? "請洽業務" : money(price)}</dd></div>
+          </dl>
+          <button className="primaryAction" disabled={!canAdd} onClick={() => props.addToCart(props.product)}><ShoppingCart size={18} /> {canAdd ? "加入購物車" : "請洽業務"}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1162,7 +1320,7 @@ function TierManager(props: { tiers: CustomerTier[]; saveTier: (tier: CustomerTi
 }
 
 function UserManager(props: { users: User[]; tiers: CustomerTier[]; saveUser: (user: User & { password?: string }) => void }) {
-  const newUser = (): User & { password?: string } => ({ id: `user-${Date.now()}`, loginId: "", name: "", email: "", password: "changeme123", role: "customer", customerTierId: props.tiers[0]?.id, allowedPaymentMethods: ["bank_transfer"], isActive: true, taxId: "", companyName: "", contactName: "", shippingAddress: "", shippingDetail: "" });
+  const newUser = (): User & { password?: string } => ({ id: `user-${Date.now()}`, loginId: "", name: "", email: "", password: "changeme123", role: "customer", customerTierId: props.tiers[0]?.id, allowedPaymentMethods: ["credit_card"], isActive: true, taxId: "", companyName: "", contactName: "", shippingAddress: "", shippingDetail: "" });
   const [editing, setEditing] = useState<User & { password?: string }>(newUser);
   function toggleMethod(method: PaymentMethod) {
     setEditing((user) => ({ ...user, allowedPaymentMethods: user.allowedPaymentMethods.includes(method) ? user.allowedPaymentMethods.filter((entry) => entry !== method) : [...user.allowedPaymentMethods, method] }));
@@ -1193,7 +1351,7 @@ function UserManager(props: { users: User[]; tiers: CustomerTier[]; saveUser: (u
             <label>聯絡人<input value={editing.contactName ?? ""} onChange={(event) => setEditing({ ...editing, contactName: event.target.value })} /></label>
             <label>送貨地點<input value={editing.shippingAddress ?? ""} onChange={(event) => setEditing({ ...editing, shippingAddress: event.target.value })} /></label>
             <label>送貨詳細<textarea value={editing.shippingDetail ?? ""} onChange={(event) => setEditing({ ...editing, shippingDetail: event.target.value })} /></label>
-            <div className="checkboxGroup"><span>允許付款方式</span>{(Object.keys(methodText) as PaymentMethod[]).map((method) => <label key={method}><input type="checkbox" checked={editing.allowedPaymentMethods.includes(method)} onChange={() => toggleMethod(method)} /> {methodText[method]}</label>)}</div>
+            <div className="paymentNotice"><strong>允許付款方式</strong><span>信用卡</span><small>目前系統只接受信用卡，付款串接尚未啟用。</small></div>
           </> : null}
           <label className="switchLabel"><input type="checkbox" checked={editing.isActive} onChange={(event) => setEditing({ ...editing, isActive: event.target.checked })} />啟用帳號</label>
           <button className="primaryAction" onClick={save}><Save size={18} /> 儲存帳號</button>

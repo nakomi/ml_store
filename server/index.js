@@ -113,6 +113,23 @@ app.get("/api/me", requireAuth, (req, res) => {
   res.json({ user: publicUser(req.user) });
 });
 
+app.patch("/api/me", requireAuth, asyncRoute(async (req, res) => {
+  const profile = req.body ?? {};
+  const saved = await upsertUser({
+    ...req.user,
+    name: profile.name ?? req.user.name,
+    email: profile.email ?? req.user.email,
+    password: profile.password || undefined,
+    taxId: req.user.role === "customer" ? profile.taxId ?? req.user.taxId : req.user.taxId,
+    companyName: req.user.role === "customer" ? profile.companyName ?? req.user.companyName : req.user.companyName,
+    contactName: req.user.role === "customer" ? profile.contactName ?? req.user.contactName : req.user.contactName,
+    shippingAddress: req.user.role === "customer" ? profile.shippingAddress ?? req.user.shippingAddress : req.user.shippingAddress,
+    shippingDetail: req.user.role === "customer" ? profile.shippingDetail ?? req.user.shippingDetail : req.user.shippingDetail,
+    allowedPaymentMethods: req.user.role === "customer" ? ["credit_card"] : req.user.allowedPaymentMethods,
+  });
+  res.json({ user: publicUser(saved) });
+}));
+
 app.get("/api/bootstrap", requireAuth, asyncRoute(async (req, res) => {
   const store = await readStore();
   const orders = req.user.role === "admin" ? store.orders : store.orders.filter((order) => order.customerId === req.user.id);
@@ -199,6 +216,8 @@ app.post("/api/orders", requireAuth, asyncRoute(async (req, res) => {
   if (req.user.role !== "customer") return res.status(403).json({ message: "只有客戶可以送出訂單。" });
   const store = await readStore();
   const { items, selectedPaymentMethod, customerNote } = req.body ?? {};
+  if (selectedPaymentMethod !== "credit_card") return res.status(400).json({ message: "目前只接受信用卡付款。" });
+  req.user.allowedPaymentMethods = ["credit_card"];
   const requiredProfileFields = ["taxId", "companyName", "contactName", "shippingAddress", "shippingDetail"];
   const missingProfile = requiredProfileFields.filter((field) => !String(req.user[field] ?? "").trim());
   if (missingProfile.length > 0) {
@@ -229,7 +248,7 @@ app.post("/api/orders", requireAuth, asyncRoute(async (req, res) => {
     });
   }
   const subtotal = orderItems.reduce((sum, item) => sum + item.subtotal, 0);
-  const paymentStatus = selectedPaymentMethod === "monthly_billing" ? "monthly_billing" : "pending";
+  const paymentStatus = "pending";
   const order = {
     id: makeId("order"),
     orderNo: await nextOrderNo(),
@@ -253,7 +272,7 @@ app.post("/api/orders", requireAuth, asyncRoute(async (req, res) => {
     adminNote: "",
     submittedAt: now(),
     revisions: [],
-    paymentRecords: selectedPaymentMethod === "bank_transfer" ? [{ id: makeId("pay"), method: "bank_transfer", provider: "manual", amount: subtotal, status: "pending" }] : [],
+    paymentRecords: [],
   };
   await createOrder(order);
   const updated = await readStore();
