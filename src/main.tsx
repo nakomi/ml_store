@@ -223,7 +223,7 @@ function App() {
     setNotice("已登出。");
   }
 
-  if (!token || !currentUser || !data) return <LoginScreen login={login} notice={notice} />;
+  if (!token || !currentUser || !data) return <CleanLoginScreen login={login} notice={notice} />;
 
   const appData = data;
   const customer = currentUser.role === "customer" ? currentUser : appData.users.find((user) => user.role === "customer") ?? currentUser;
@@ -473,8 +473,8 @@ function App() {
 }
 
 function LoginScreen(props: { login: (loginId: string, password: string) => Promise<void>; notice: string }) {
-  const [loginId, setLoginId] = useState("admin");
-  const [password, setPassword] = useState("admin123");
+  const [loginId, setLoginId] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -494,7 +494,36 @@ function LoginScreen(props: { login: (loginId: string, password: string) => Prom
         <label>登入 ID<input value={loginId} onChange={(event) => setLoginId(event.target.value)} /></label>
         <label>密碼<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
         <button className="primaryAction" type="submit"><LogIn size={18} /> 登入</button>
-        <div className="loginHint">範例：admin / admin123，hotel / customer123</div>
+        {error ? <p className="formError">{error}</p> : <p className="empty">{props.notice}</p>}
+      </form>
+    </main>
+  );
+}
+
+function CleanLoginScreen(props: { login: (loginId: string, password: string) => Promise<void>; notice: string }) {
+  const [loginId, setLoginId] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      await props.login(loginId, password);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "登入失敗。");
+    }
+  }
+
+  return (
+    <main className="loginPage">
+      <form className="loginPanel" onSubmit={submit}>
+        <Package size={34} />
+        <h1>工廠 B2B 訂購入口</h1>
+        <p>請使用已建立的帳號登入。</p>
+        <label>登入 ID<input value={loginId} onChange={(event) => setLoginId(event.target.value)} autoComplete="username" /></label>
+        <label>密碼<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
+        <button className="primaryAction" type="submit"><LogIn size={18} /> 登入</button>
         {error ? <p className="formError">{error}</p> : <p className="empty">{props.notice}</p>}
       </form>
     </main>
