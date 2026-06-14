@@ -58,6 +58,7 @@ type Order = { id: string; orderNo: string; customerId: string; customerSnapshot
 type OrderRevisionInput = { items: Pick<OrderItem, "id" | "productId" | "quantity" | "unitPriceSnapshot">[]; adjustmentTotal: number; freightTotal: number; adminNote: string; changeSummary: string };
 type Bootstrap = { customerTiers: CustomerTier[]; users: User[]; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[]; orders: Order[] };
 
+const cartStorageKey = "b2b-store-cart";
 const allCategory = "全部";
 const methodText: Record<PaymentMethod, string> = { monthly_billing: "月結", bank_transfer: "銀行轉帳", credit_card: "信用卡" };
 const roleText: Record<Role, string> = { admin: "管理員", customer: "客戶" };
@@ -90,6 +91,18 @@ function adminTitle(tab: "orders" | "products" | "users" | "tiers") {
     tiers: "客戶等級",
   };
   return titles[tab];
+}
+
+function loadStoredCart(): CartItem[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(cartStorageKey) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => typeof item?.productId === "string" && Number.isFinite(Number(item?.quantity)))
+      .map((item) => ({ productId: item.productId, quantity: Number(item.quantity) }));
+  } catch {
+    return [];
+  }
 }
 
 function money(value: number) {
@@ -179,7 +192,7 @@ function App() {
   const [notice, setNotice] = useState("請登入後開始使用。");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState(allCategory);
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, setCart] = useState<CartItem[]>(loadStoredCart);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>("credit_card");
   const [customerNote, setCustomerNote] = useState("");
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
@@ -209,6 +222,10 @@ function App() {
         setToken(null);
       });
   }, [token]);
+
+  useEffect(() => {
+    localStorage.setItem(cartStorageKey, JSON.stringify(cart));
+  }, [cart]);
 
   async function login(loginId: string, password: string) {
     const result = await apiRequest<{ token: string; user: User }>("/api/auth/login", null, {
@@ -490,7 +507,7 @@ function App() {
           />
         )}
       </main>
-      {selectedProduct ? <CleanProductDetailModal product={selectedProduct} customer={customer} prices={appData.prices} addToCart={addToCart} close={() => setSelectedProduct(null)} canOrder={currentUser.role === "customer"} /> : null}
+      {selectedProduct ? <CleanProductDetailModal product={selectedProduct} customer={customer} prices={appData.prices} addToCart={(product) => { addToCart(product); setSelectedProduct(null); }} close={() => setSelectedProduct(null)} canOrder={currentUser.role === "customer"} /> : null}
     </div>
   );
 }
@@ -569,16 +586,29 @@ function CustomerInfo(props: { customer: User }) {
   );
 }
 
-function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: (user: User & { password?: string }) => void }) {
+function CartCustomerSummary(props: { customer: User }) {
+  return (
+    <div className="cartCustomerSummary">
+      <div><strong>{props.customer.companyName || props.customer.name}</strong><span>{props.customer.taxId || "未設定統編"}</span></div>
+      <div><span>{props.customer.contactName || "未設定聯絡人"}</span><span>{props.customer.shippingAddress || "未設定送貨地點"}</span></div>
+    </div>
+  );
+}
+
+function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: (user: User & { password?: string }) => void | Promise<void> }) {
   const [editing, setEditing] = useState<User & { password?: string }>({ ...props.user, password: "" });
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
 
   useEffect(() => {
     setEditing({ ...props.user, password: "" });
   }, [props.user]);
 
-  function save() {
+  async function save() {
     if (!editing.name.trim()) return;
-    props.saveProfile(editing);
+    setSaveState("saving");
+    await props.saveProfile(editing);
+    setSaveState("saved");
+    window.setTimeout(() => setSaveState("idle"), 1800);
   }
 
   return (
@@ -599,7 +629,7 @@ function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: 
             <div className="paymentNotice"><strong>付款方式</strong><span>信用卡</span><small>付款串接尚未啟用，訂單會先送出等待後續處理。</small></div>
           </> : null}
         </div>
-        <button className="primaryAction" onClick={save}><Save size={18} /> 儲存帳號資料</button>
+        <button className="primaryAction" disabled={saveState === "saving"} onClick={save}><Save size={18} /> {saveState === "saving" ? "儲存中..." : saveState === "saved" ? "已儲存" : "儲存帳號資料"}</button>
       </section>
       <section>
         <div className="sectionHeader"><div><h2>過去訂單</h2><p>查看此帳號送出的訂單紀錄。</p></div></div>
@@ -677,7 +707,7 @@ function CustomerPortal(props: {
       {props.cartOpen ? <div className="cartBackdrop" onClick={() => props.setCartOpen(false)} /> : null}
       <aside className={`cartDrawer ${props.cartOpen ? "open" : ""}`}>
         <button className="drawerClose" onClick={() => props.setCartOpen(false)} aria-label="關閉購物車"><X size={16} /></button>
-        {props.checkoutStep === "confirm" ? <ConfirmPanel {...props} /> : props.checkoutStep === "thankyou" ? <ThankYouPanel order={props.submittedOrder} customer={props.customer} back={() => props.setCheckoutStep("cart")} /> : <CartPanel {...props} />}
+        {props.checkoutStep === "confirm" ? <ConfirmPanel {...props} /> : props.checkoutStep === "thankyou" ? <ThankYouPanel order={props.submittedOrder} customer={props.customer} back={() => props.setCheckoutStep("cart")} /> : <CleanCartPanel {...props} />}
         <section>
           <h2>訂單紀錄</h2>
           {props.orders.length === 0 ? <p className="empty">尚無訂單。</p> : props.orders.map((order) => (
@@ -783,6 +813,47 @@ function ProductList(props: Parameters<typeof CustomerPortal>[0]) {
         );
       })}
     </div>
+  );
+}
+
+function CleanCartPanel(props: Parameters<typeof CustomerPortal>[0]) {
+  return (
+    <section className="cartPanel">
+      <div className="cartTitle">
+        <h2>購物車</h2>
+        <span>{props.cartRows.length}</span>
+      </div>
+      <CartCustomerSummary customer={props.customer} />
+      <div className="cartItems">
+        {!props.canOrder ? <p className="empty">管理員預覽客戶型錄時不能送出訂單。</p> : props.cartRows.length === 0 ? <p className="empty">尚未加入商品。</p> : props.cartRows.map((row) => {
+          const decrease = () => props.updateCart(row.product.id, Math.max(row.product.moq, row.quantity - row.product.orderIncrement));
+          const increase = () => props.updateCart(row.product.id, row.quantity + row.product.orderIncrement);
+          return (
+            <div className="cartItem" key={row.product.id}>
+              <img src={row.product.image} alt={row.product.name} />
+              <div className="cartItemMain">
+                <strong>{row.product.name}</strong>
+                <span>{row.product.sku} · {row.product.brand}</span>
+                <small>{money(row.price)}</small>
+                <div className="quantityStepper">
+                  <button onClick={decrease} disabled={row.quantity <= row.product.moq} aria-label="減少數量">-</button>
+                  <input type="number" min={row.product.moq} step={row.product.orderIncrement} value={row.quantity} onChange={(event) => props.updateCart(row.product.id, Number(event.target.value))} />
+                  <button onClick={increase} aria-label="增加數量">+</button>
+                </div>
+              </div>
+              <strong className="cartItemSubtotal">{money(row.subtotal)}</strong>
+              <button className="cartRemove" onClick={() => props.setCart((items) => items.filter((item) => item.productId !== row.product.id))} aria-label="刪除" title="刪除"><Trash2 size={17} /></button>
+            </div>
+          );
+        })}
+      </div>
+      <div className="cartSummary">
+        <div className="estimatedTotal"><span>估計總金額</span><strong>{money(props.cartTotal)} TWD</strong></div>
+        <p>結帳時會由管理員確認金額與出貨資訊。</p>
+        <label>客戶備註<textarea disabled={!props.canOrder} value={props.customerNote} onChange={(event) => props.setCustomerNote(event.target.value)} placeholder="出貨、對帳或其他備註" /></label>
+        <button className="checkoutAction" disabled={!props.canOrder || props.cartRows.length === 0} onClick={props.goToConfirm}>結帳</button>
+      </div>
+    </section>
   );
 }
 
