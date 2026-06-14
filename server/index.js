@@ -28,9 +28,21 @@ import {
 
 const app = express();
 const port = Number(process.env.API_PORT ?? 3001);
+const host = process.env.API_HOST ?? "0.0.0.0";
 const jwtSecret = process.env.JWT_SECRET ?? "local-dev-secret-change-me";
 
-app.use(cors({ origin: ["http://127.0.0.1:5173", "http://localhost:5173"] }));
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    try {
+      const { hostname, port: originPort } = new URL(origin);
+      const allowedHost = hostname === "localhost" || hostname === "127.0.0.1" || /^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname);
+      return callback(null, allowedHost && originPort === "5173");
+    } catch {
+      return callback(null, false);
+    }
+  },
+}));
 app.use(express.json({ limit: "1mb" }));
 
 function resolveProductPrice(productId, customer, prices) {
@@ -288,8 +300,8 @@ app.use((error, req, res, next) => {
 
 await initDb();
 
-app.listen(port, "127.0.0.1", () => {
+app.listen(port, host, () => {
   const safeUrl = databaseUrl.replace(/:\/\/([^:]+):([^@]+)@/, "://$1:***@");
-  console.log(`B2B Store API listening on http://127.0.0.1:${port}`);
+  console.log(`B2B Store API listening on http://${host}:${port}`);
   console.log(`PostgreSQL: ${safeUrl}`);
 });
