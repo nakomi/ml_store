@@ -483,6 +483,31 @@ export async function upsertUser(user, client = pool) {
   return saved;
 }
 
+export async function deleteUser(id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT * FROM app_users WHERE id = $1", [id]);
+    if (!existing.rows[0]) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const user = mapUserRow(existing.rows[0]);
+    if (user.role === "admin" && user.isActive) {
+      const activeAdmins = await client.query("SELECT COUNT(*)::int AS count FROM app_users WHERE role = 'admin' AND is_active = TRUE");
+      if (Number(activeAdmins.rows[0].count) <= 1) throw new Error("至少需要保留一個啟用中的管理員帳號。");
+    }
+    await client.query("UPDATE app_users SET is_active = FALSE WHERE id = $1", [id]);
+    await client.query("COMMIT");
+    return { ...user, isActive: false };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function upsertProduct(product, client = pool) {
   const sku = String(product.sku ?? "").trim();
   const existing = product.id
@@ -521,6 +546,23 @@ export async function patchProduct(id, patch) {
 
 export async function archiveProduct(id) {
   return patchProduct(id, { isActive: false, isOrderable: false });
+}
+
+export async function clearProductTestData() {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const prices = await client.query("DELETE FROM product_prices");
+    const rules = await client.query("DELETE FROM visibility_rules");
+    const products = await client.query("DELETE FROM products");
+    await client.query("COMMIT");
+    return { deletedProducts: products.rowCount, deletedPrices: prices.rowCount, deletedVisibilityRules: rules.rowCount };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function upsertPrice(price, client = pool) {
@@ -581,7 +623,7 @@ function normalizeLookup(value) {
   return String(value ?? "").trim().toLowerCase().replace(/\s+/g, "");
 }
 
-function resolveImportPriceScope(price, tiers, users) {
+async function resolveImportPriceScope(price, tiers, users, client, result) {
   if (price.scopeType === "default" || price.scopeName === "預設價格" || price.scopeName === "default") {
     return { scopeType: "default", scopeId: null };
   }
@@ -590,9 +632,16 @@ function resolveImportPriceScope(price, tiers, users) {
     const customer = users.find((user) => user.role === "customer" && [user.id, user.name, user.loginId, user.companyName].some((value) => normalizeLookup(value) === key));
     return customer ? { scopeType: "customer", scopeId: customer.id } : null;
   }
-  const key = normalizeLookup(price.scopeName ?? price.scopeId ?? price.tierName);
-  const tier = tiers.find((entry) => [entry.id, entry.code, entry.name].some((value) => normalizeLookup(value) === key));
-  return tier ? { scopeType: "customer_tier", scopeId: tier.id } : null;
+  const rawCode = String(price.scopeCode ?? price.tierCode ?? price.code ?? "").trim();
+  const rawName = String(price.scopeName ?? price.tierName ?? price.scopeId ?? "").trim();
+  const keys = [rawCode, rawName].filter(Boolean).map(normalizeLookup);
+  const tier = tiers.find((entry) => [entry.id, entry.code, entry.name].some((value) => keys.includes(normalizeLookup(value))));
+  if (tier) return { scopeType: "customer_tier", scopeId: tier.id };
+  if (!rawCode || !rawName) return null;
+  const saved = await upsertTier({ code: rawCode, name: rawName, description: "匯入商品時自動建立", isActive: true }, client);
+  tiers.push(saved);
+  result.createdTiers += 1;
+  return { scopeType: "customer_tier", scopeId: saved.id };
 }
 
 export async function importProductsFromJson(payload) {
@@ -600,7 +649,7 @@ export async function importProductsFromJson(payload) {
   if (products.length === 0) throw new Error("匯入 JSON 必須包含 products 陣列。");
 
   const client = await pool.connect();
-  const result = { importedProducts: 0, importedPrices: 0, importedVisibilityRules: 0, skippedPrices: [], errors: [] };
+  const result = { importedProducts: 0, importedPrices: 0, importedVisibilityRules: 0, createdTiers: 0, skippedPrices: [], errors: [] };
   try {
     await client.query("BEGIN");
     const store = await readStore();
@@ -632,7 +681,7 @@ export async function importProductsFromJson(payload) {
       for (const priceEntry of prices) {
         const price = Number(priceEntry.price);
         if (!Number.isFinite(price) || price < 0) continue;
-        const scope = resolveImportPriceScope(priceEntry, store.customerTiers, store.users);
+        const scope = await resolveImportPriceScope(priceEntry, store.customerTiers, store.users, client, result);
         if (!scope) {
           result.skippedPrices.push({ sku, scopeName: priceEntry.scopeName ?? priceEntry.tierName ?? priceEntry.scopeId ?? "", price });
           continue;

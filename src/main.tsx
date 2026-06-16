@@ -58,10 +58,11 @@ type CustomerSnapshot = { taxId: string; companyName: string; contactName: strin
 type Order = { id: string; orderNo: string; customerId: string; customerSnapshot?: CustomerSnapshot; orderStatus: OrderStatus; paymentStatus: PaymentStatus; selectedPaymentMethod: PaymentMethod; items: OrderItem[]; subtotal: number; adjustmentTotal: number; freightTotal: number; grandTotal: number; customerNote: string; adminNote: string; submittedAt: string; confirmedAt?: string; revisions: OrderRevision[]; paymentRecords: PaymentRecord[] };
 type OrderRevisionInput = { items: Pick<OrderItem, "id" | "productId" | "quantity" | "unitPriceSnapshot">[]; adjustmentTotal: number; freightTotal: number; adminNote: string; changeSummary: string };
 type Bootstrap = { customerTiers: CustomerTier[]; users: User[]; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[]; orders: Order[] };
-type ProductImportResult = { importedProducts: number; importedPrices: number; importedVisibilityRules: number; skippedPrices: { sku: string; scopeName: string; price: number }[]; errors: string[] };
+type ProductImportResult = { importedProducts: number; importedPrices: number; importedVisibilityRules: number; createdTiers: number; skippedPrices: { sku: string; scopeName: string; price: number }[]; errors: string[] };
 
 const cartStorageKey = "b2b-store-cart";
-const allCategory = "全部";
+const loginNotice = "請登入後開始使用。";
+const allCategory = "所有產品";
 const methodText: Record<PaymentMethod, string> = { monthly_billing: "月結", bank_transfer: "銀行轉帳", credit_card: "信用卡" };
 const roleText: Record<Role, string> = { admin: "管理員", customer: "客戶" };
 const statusText: Record<OrderStatus, string> = {
@@ -155,6 +156,20 @@ function xmlEscape(value: string | number | undefined) {
   return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function ProductImage(props: { product: Product; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  const image = props.product.image.trim();
+  if (!image || failed) {
+    return (
+      <div className={`productImagePlaceholder ${props.className ?? ""}`} role="img" aria-label={`${props.product.name} placeholder`}>
+        <Package size={28} />
+        <span>商品圖片</span>
+      </div>
+    );
+  }
+  return <img className={props.className} src={image} alt={props.product.name} onError={() => setFailed(true)} />;
+}
+
 function downloadExcelXml(fileName: string, sheets: { name: string; rows: Record<string, string | number | undefined>[] }[]) {
   const sheetXml = (name: string, rows: Record<string, string | number | undefined>[]) => {
     const headers = rows[0] ? Object.keys(rows[0]) : [];
@@ -200,7 +215,7 @@ function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [view, setView] = useState<"customer" | "admin" | "account">("customer");
   const [adminTab, setAdminTab] = useState<"orders" | "products" | "users" | "tiers">("orders");
-  const [notice, setNotice] = useState("請登入後開始使用。");
+  const [notice, setNotice] = useState(loginNotice);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState(allCategory);
   const [cart, setCart] = useState<CartItem[]>(loadStoredCart);
@@ -226,11 +241,13 @@ function App() {
         setCurrentUser(user);
         setView(user.role === "admin" ? "admin" : "customer");
         setSelectedPaymentMethod("credit_card");
+        setNotice(`${user.name} 已登入。`);
         return loadBootstrap(token);
       })
       .catch(() => {
         localStorage.removeItem("b2b-token");
         setToken(null);
+        setNotice(loginNotice);
       });
   }, [token]);
 
@@ -258,22 +275,26 @@ function App() {
     setNotice("已登出。");
   }
 
-  if (!token || !currentUser || !data) return <CleanLoginScreen login={login} notice={notice} />;
+  if (!token) return <CleanLoginScreen login={login} notice={notice} />;
+  if (!currentUser || !data) return <LoadingScreen />;
 
   const appData = data;
+  const currentNotice = notice === loginNotice ? `${currentUser.name} 已登入。` : notice;
   const customer = currentUser.role === "customer" ? currentUser : appData.users.find((user) => user.role === "customer") ?? currentUser;
-  const visibleProducts = appData.products
-    .filter((product) => currentUser.role === "admin" || canCustomerSeeProduct(product, customer, appData.visibilityRules))
-    .filter((product) => category === allCategory || product.category === category)
+  const catalogProducts = appData.products
+    .filter((product) => currentUser.role === "admin" || canCustomerSeeProduct(product, customer, appData.visibilityRules));
+  const categories = [allCategory, ...Array.from(new Set(catalogProducts.map((product) => product.category.trim()).filter(Boolean)))];
+  const visibleProducts = catalogProducts
+    .filter((product) => category === allCategory || product.category.trim() === category)
     .filter((product) => {
       const keyword = query.trim().toLowerCase();
       return !keyword || [product.sku, product.name, product.brand].some((value) => value.toLowerCase().includes(keyword));
     });
-  const categories = [allCategory, ...Array.from(new Set(appData.products.map((product) => product.category)))];
-  const cartRows = cart.map((item) => {
-    const product = appData.products.find((entry) => entry.id === item.productId)!;
+  const cartRows = cart.flatMap((item) => {
+    const product = appData.products.find((entry) => entry.id === item.productId);
+    if (!product) return [];
     const price = resolveProductPrice(product.id, customer, appData.prices) ?? 0;
-    return { product, quantity: item.quantity, price, subtotal: price * item.quantity };
+    return [{ product, quantity: item.quantity, price, subtotal: price * item.quantity }];
   });
   const cartTotal = cartRows.reduce((sum, row) => sum + row.subtotal, 0);
 
@@ -339,6 +360,12 @@ function App() {
     setNotice(`${roleText[user.role]} ${user.name} 已儲存。`);
   }
 
+  async function deleteUser(user: User) {
+    const result = await apiRequest<{ user: User; users: User[] }>(`/api/users/${user.id}`, token, { method: "DELETE" });
+    setData((prev) => prev ? { ...prev, users: result.users } : prev);
+    setNotice(`帳號 ${user.name} 已刪除。`);
+  }
+
   async function saveTier(tier: CustomerTier & { description?: string }) {
     const result = await apiRequest<{ customerTiers: CustomerTier[] }>("/api/customer-tiers", token, { method: "POST", body: JSON.stringify(tier) });
     setData((prev) => prev ? { ...prev, customerTiers: result.customerTiers } : prev);
@@ -361,6 +388,13 @@ function App() {
     const result = await apiRequest<{ product: Product }>(`/api/products/${product.id}`, token, { method: "DELETE" });
     setData((prev) => prev ? { ...prev, products: prev.products.map((entry) => entry.id === product.id ? result.product : entry) } : prev);
     setNotice(`商品 ${product.name} 已封存。`);
+  }
+
+  async function clearProductTestData() {
+    const result = await apiRequest<{ result: { deletedProducts: number; deletedPrices: number; deletedVisibilityRules: number }; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[] }>("/api/products/test-data", token, { method: "DELETE" });
+    setData((prev) => prev ? { ...prev, products: result.products, prices: result.prices, visibilityRules: result.visibilityRules } : prev);
+    setCart([]);
+    setNotice(`已清空產品測試資料：${result.result.deletedProducts} 筆產品、${result.result.deletedPrices} 筆價格、${result.result.deletedVisibilityRules} 筆可見性規則。`);
   }
 
   async function savePrice(price: ProductPrice) {
@@ -428,9 +462,10 @@ function App() {
       body: JSON.stringify(payload),
     });
     setData((prev) => prev ? { ...prev, products: response.products, prices: response.prices, visibilityRules: response.visibilityRules } : prev);
+    const createdTiers = response.result.createdTiers > 0 ? `，自動建立 ${response.result.createdTiers} 個客戶等級` : "";
     const skipped = response.result.skippedPrices.length > 0 ? `，${response.result.skippedPrices.length} 筆價格找不到對應客戶等級` : "";
     const errors = response.result.errors.length > 0 ? `，${response.result.errors.length} 筆商品未匯入` : "";
-    setNotice(`已匯入 ${response.result.importedProducts} 筆商品與 ${response.result.importedPrices} 筆價格${skipped}${errors}。`);
+    setNotice(`已匯入 ${response.result.importedProducts} 筆商品與 ${response.result.importedPrices} 筆價格${createdTiers}${skipped}${errors}。`);
   }
 
   async function reviseOrder(orderId: string, revision: OrderRevisionInput) {
@@ -502,6 +537,12 @@ function App() {
         <nav>
           <button className={view === "customer" ? "active" : ""} onClick={() => { setView("customer"); setMobileMenuOpen(false); }}><ShoppingCart size={18} /> 客戶訂購</button>
           <button className={view === "account" ? "active" : ""} onClick={() => { setView("account"); setMobileMenuOpen(false); }}><UserRound size={18} /> 我的帳號</button>
+          <div className="sideNavLabel">商品分類</div>
+          {categories.map((name) => (
+            <button className={view === "customer" && category === name ? "active" : ""} key={name} onClick={() => { setView("customer"); setCategory(name); setMobileMenuOpen(false); }}>
+              <Filter size={18} /> {name}
+            </button>
+          ))}
           {currentUser.role === "admin" ? <>
             <div className="sideNavLabel">管理後台</div>
             <button className={view === "admin" && adminTab === "orders" ? "active" : ""} onClick={() => { setView("admin"); setAdminTab("orders"); setMobileMenuOpen(false); }}><Settings size={18} /> 訂單審核</button>
@@ -519,7 +560,7 @@ function App() {
       <main>
         <header className="topbar">
           <div><p className="eyebrow">{roleText[currentUser.role]}</p><h1>{view === "admin" ? adminTitle(adminTab) : view === "account" ? "我的帳號" : "商品訂購"}</h1></div>
-          <div className="notice"><Bell size={18} /><span>{notice}</span></div>
+          <div className="notice"><Bell size={18} /><span>{currentNotice}</span></div>
         </header>
         {view === "account" ? (
           <CustomerAccountPage user={currentUser} orders={appData.orders.filter((order) => order.customerId === currentUser.id)} saveProfile={saveSelfProfile} />
@@ -560,14 +601,17 @@ function App() {
           />
         ) : (
           <AdminPortal
+            currentUserId={currentUser.id}
             users={appData.users}
             tiers={appData.customerTiers}
             adminTab={adminTab}
             saveUser={saveUser}
+            deleteUser={deleteUser}
             saveTier={saveTier}
             deleteTier={deleteTier}
             saveProduct={saveProduct}
             archiveProduct={archiveProduct}
+            clearProductTestData={clearProductTestData}
             savePrice={savePrice}
             saveVisibilityRule={saveVisibilityRule}
             exportProductsJson={exportProductsJson}
@@ -727,6 +771,18 @@ function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: 
   );
 }
 
+function LoadingScreen() {
+  return (
+    <main className="loginPage">
+      <div className="loginPanel">
+        <Package size={34} />
+        <h1>工廠 B2B 訂購入口</h1>
+        <p>正在載入帳號與訂購資料。</p>
+      </div>
+    </main>
+  );
+}
+
 function CustomerPortal(props: {
   products: Product[];
   customer: User;
@@ -807,7 +863,7 @@ function CleanProductGrid(props: Parameters<typeof CustomerPortal>[0]) {
         const canAdd = props.canOrder && product.isOrderable && price !== null;
         return (
           <article className="productCard" key={product.id}>
-            <button className="imageButton" onClick={() => props.openDetail(product)} aria-label={`查看 ${product.name}`}><img src={product.image} alt={product.name} /></button>
+            <button className="imageButton" onClick={() => props.openDetail(product)} aria-label={`查看 ${product.name}`}><ProductImage product={product} /></button>
             <div className="productBody">
               <div className="sku">{product.sku} · {product.brand}</div>
               <button className="productTitleButton" onClick={() => props.openDetail(product)}>{product.name}</button>
@@ -855,7 +911,7 @@ function ProductGrid(props: Parameters<typeof CustomerPortal>[0]) {
         const canAdd = props.canOrder && product.isOrderable && price !== null;
         return (
           <article className="productCard" key={product.id}>
-            <button className="imageButton" onClick={() => props.openDetail(product)} aria-label={`查看 ${product.name}`}><img src={product.image} alt={product.name} /></button>
+            <button className="imageButton" onClick={() => props.openDetail(product)} aria-label={`查看 ${product.name}`}><ProductImage product={product} /></button>
             <div className="productBody">
               <div className="sku">{product.sku}</div><h3>{product.name}</h3><p>{product.description}</p>
               <div className="meta"><span>{product.brand}</span><span>{product.series}</span><span>MOQ {product.moq} {product.salesUnit}</span></div>
@@ -907,7 +963,7 @@ function CleanCartPanel(props: Parameters<typeof CustomerPortal>[0]) {
           const increase = () => props.updateCart(row.product.id, row.quantity + row.product.orderIncrement);
           return (
             <div className="cartItem" key={row.product.id}>
-              <img src={row.product.image} alt={row.product.name} />
+              <ProductImage product={row.product} />
               <div className="cartItemMain">
                 <strong>{row.product.name}</strong>
                 <span>{row.product.sku} · {row.product.brand}</span>
@@ -1001,7 +1057,7 @@ function CleanProductDetailModal(props: { product: Product; customer: User; pric
     <div className="modalBackdrop" role="dialog" aria-modal="true">
       <div className="detailModal">
         <button className="modalClose" onClick={props.close}>關閉</button>
-        <img src={props.product.image} alt={props.product.name} />
+        <ProductImage product={props.product} />
         <div className="detailContent">
           <div className="sku">{props.product.sku}</div>
           <h2>{props.product.name}</h2>
@@ -1028,7 +1084,7 @@ function ProductDetailModal(props: { product: Product; customer: User; prices: P
   return (
     <div className="modalBackdrop" role="dialog" aria-modal="true">
       <div className="detailModal">
-        <button className="modalClose" onClick={props.close}>關閉</button><img src={props.product.image} alt={props.product.name} />
+        <button className="modalClose" onClick={props.close}>關閉</button><ProductImage product={props.product} />
         <div className="detailContent">
           <div className="sku">{props.product.sku}</div><h2>{props.product.name}</h2><p>{props.product.description}</p>
           <dl className="detailList">
@@ -1042,14 +1098,17 @@ function ProductDetailModal(props: { product: Product; customer: User; prices: P
 }
 
 function AdminPortal(props: {
+  currentUserId: string;
   users: User[];
   tiers: CustomerTier[];
   adminTab: "orders" | "products" | "users" | "tiers";
   saveUser: (user: User & { password?: string }) => void;
+  deleteUser: (user: User) => Promise<void>;
   saveTier: (tier: CustomerTier & { description?: string }) => void;
   deleteTier: (tier: CustomerTier) => void;
   saveProduct: (product: Product) => void;
   archiveProduct: (product: Product) => Promise<void>;
+  clearProductTestData: () => Promise<void>;
   savePrice: (price: ProductPrice) => void;
   saveVisibilityRule: (rule: VisibilityRule) => void;
   products: Product[];
@@ -1067,8 +1126,8 @@ function AdminPortal(props: {
   return (
     <div className="adminGrid">
       {props.adminTab === "orders" ? <OrderReviewManager users={props.users} orders={props.orders} reviseOrder={props.reviseOrder} updateOrderStatus={props.updateOrderStatus} markPaid={props.markPaid} exportOrders={props.exportOrders} /> : null}
-      {props.adminTab === "products" ? <ProductSettingsManagerV2 products={props.products} prices={props.prices} rules={props.rules} users={props.users} tiers={props.tiers} saveProduct={props.saveProduct} archiveProduct={props.archiveProduct} savePrice={props.savePrice} saveVisibilityRule={props.saveVisibilityRule} toggleProductOrderable={props.toggleProductOrderable} exportProductsJson={props.exportProductsJson} importProductsJson={props.importProductsJson} /> : null}
-      {props.adminTab === "users" ? <UserManager users={props.users} tiers={props.tiers} saveUser={props.saveUser} /> : null}
+      {props.adminTab === "products" ? <ProductSettingsManagerV2 products={props.products} prices={props.prices} rules={props.rules} users={props.users} tiers={props.tiers} saveProduct={props.saveProduct} archiveProduct={props.archiveProduct} clearProductTestData={props.clearProductTestData} savePrice={props.savePrice} saveVisibilityRule={props.saveVisibilityRule} toggleProductOrderable={props.toggleProductOrderable} exportProductsJson={props.exportProductsJson} importProductsJson={props.importProductsJson} /> : null}
+      {props.adminTab === "users" ? <UserManager users={props.users} tiers={props.tiers} currentUserId={props.currentUserId} saveUser={props.saveUser} deleteUser={props.deleteUser} /> : null}
       {props.adminTab === "tiers" ? <TierManager tiers={props.tiers} saveTier={props.saveTier} deleteTier={props.deleteTier} /> : null}
     </div>
   );
@@ -1271,6 +1330,7 @@ function ProductSettingsManagerV2(props: {
   tiers: CustomerTier[];
   saveProduct: (product: Product) => void;
   archiveProduct: (product: Product) => Promise<void>;
+  clearProductTestData: () => Promise<void>;
   savePrice: (price: ProductPrice) => void;
   saveVisibilityRule: (rule: VisibilityRule) => void;
   toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
@@ -1281,7 +1341,7 @@ function ProductSettingsManagerV2(props: {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [productSearch, setProductSearch] = useState("");
-  const [selectedProductId, setSelectedProductId] = useState(props.products[0]?.id ?? "");
+  const [selectedProductId, setSelectedProductId] = useState(props.products.find((product) => product.isActive)?.id ?? "");
   const [activePanel, setActivePanel] = useState<"details" | "prices" | "visibility">("details");
   const blankProduct = (): Product => ({
     id: `product-${Date.now()}`,
@@ -1302,13 +1362,14 @@ function ProductSettingsManagerV2(props: {
   });
   const blankPrice = (productId = selectedProductId): ProductPrice => ({ id: "", productId, scopeType: "default", scopeId: null, price: 0, currency: "TWD", isActive: true });
   const blankRule = (productId = selectedProductId): VisibilityRule => ({ id: "", productId, ruleType: "visible_to_all", scopeId: null, isActive: true });
-  const [productForm, setProductForm] = useState<Product>(() => props.products[0] ?? blankProduct());
-  const [priceForm, setPriceForm] = useState<ProductPrice>(() => blankPrice(props.products[0]?.id ?? ""));
-  const [ruleForm, setRuleForm] = useState<VisibilityRule>(() => blankRule(props.products[0]?.id ?? ""));
-  const selectedProduct = props.products.find((product) => product.id === selectedProductId) ?? null;
+  const [productForm, setProductForm] = useState<Product>(() => props.products.find((product) => product.isActive) ?? blankProduct());
+  const [priceForm, setPriceForm] = useState<ProductPrice>(() => blankPrice(props.products.find((product) => product.isActive)?.id ?? ""));
+  const [ruleForm, setRuleForm] = useState<VisibilityRule>(() => blankRule(props.products.find((product) => product.isActive)?.id ?? ""));
+  const activeProducts = props.products.filter((product) => product.isActive);
+  const selectedProduct = activeProducts.find((product) => product.id === selectedProductId) ?? null;
   const selectedPrices = selectedProduct ? props.prices.filter((price) => price.productId === selectedProduct.id) : [];
   const selectedRules = selectedProduct ? props.rules.filter((rule) => rule.productId === selectedProduct.id) : [];
-  const filteredProducts = props.products.filter((product) => {
+  const filteredProducts = activeProducts.filter((product) => {
     const keyword = productSearch.trim().toLowerCase();
     return !keyword || [product.sku, product.name, product.brand, product.category].some((value) => value.toLowerCase().includes(keyword));
   });
@@ -1346,7 +1407,20 @@ function ProductSettingsManagerV2(props: {
     const confirmed = window.confirm(`確定要封存商品「${selectedProduct.name}」？\n\n封存後客戶前台不會再顯示此商品，也不可下單；過去訂單紀錄不會受到影響。`);
     if (!confirmed) return;
     await props.archiveProduct(selectedProduct);
-    setProductForm({ ...selectedProduct, isActive: false, isOrderable: false });
+    const nextProduct = activeProducts.find((product) => product.id !== selectedProduct.id);
+    if (nextProduct) {
+      selectProduct(nextProduct);
+    } else {
+      createProduct();
+    }
+  };
+  const clearAllProductTestData = async () => {
+    const firstConfirm = window.confirm("確定要清空產品測試資料？\n\n這會刪除所有產品、價格與商品可見性規則。過去訂單紀錄不會刪除。");
+    if (!firstConfirm) return;
+    const secondConfirm = window.confirm("請再次確認：真的要清空所有產品測試資料嗎？\n\n此操作無法從系統介面復原。");
+    if (!secondConfirm) return;
+    await props.clearProductTestData();
+    createProduct();
   };
   const savePrice = () => {
     if (!priceForm.productId) return;
@@ -1378,6 +1452,7 @@ function ProductSettingsManagerV2(props: {
         <div className="headerActions">
           <button onClick={props.exportProductsJson}><Download size={18} /> 匯出商品 JSON</button>
           <button disabled={isImporting} onClick={() => fileInputRef.current?.click()}><Upload size={18} /> {isImporting ? "匯入中" : "匯入商品 JSON"}</button>
+          <button className="dangerAction" onClick={() => void clearAllProductTestData()}><Trash2 size={18} /> 清空產品測試資料</button>
           <button onClick={createProduct}><Plus size={18} /> 新增商品</button>
           <input ref={fileInputRef} className="hiddenFileInput" type="file" accept="application/json,.json" onChange={(event) => void importJson(event.target.files?.[0])} />
         </div>
@@ -1388,7 +1463,7 @@ function ProductSettingsManagerV2(props: {
           <div className="productPickerList">
             {filteredProducts.map((product) => (
               <button className={product.id === selectedProductId ? "productPick active" : "productPick"} key={product.id} onClick={() => selectProduct(product)}>
-                <strong>{product.sku}</strong><span>{product.name}</span><small>{product.isActive ? product.isOrderable ? "可下單" : "不可下單" : "已封存"} / 價格 {props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆 / 庫存 {product.stockQuantity}</small>
+                <strong>{product.sku}</strong><span>{product.name}</span><small>{product.isOrderable ? "可下單" : "不可下單"} / 價格 {props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆 / 庫存 {product.stockQuantity}</small>
               </button>
             ))}
           </div>
@@ -1416,7 +1491,6 @@ function ProductSettingsManagerV2(props: {
               <div className="formSplit"><label>起訂量<input type="number" min="1" value={productForm.moq} onChange={(event) => setProductForm({ ...productForm, moq: Number(event.target.value) })} /></label><label>下單倍數<input type="number" min="1" value={productForm.orderIncrement} onChange={(event) => setProductForm({ ...productForm, orderIncrement: Number(event.target.value) })} /></label></div>
               <label>目前庫存<input type="number" min="0" value={productForm.stockQuantity} onChange={(event) => setProductForm({ ...productForm, stockQuantity: Number(event.target.value) })} /></label>
               <label className="switchLabel"><input type="checkbox" checked={productForm.isOrderable} onChange={(event) => setProductForm({ ...productForm, isOrderable: event.target.checked })} />可下單</label>
-              <label className="switchLabel"><input type="checkbox" checked={productForm.isActive} onChange={(event) => setProductForm({ ...productForm, isActive: event.target.checked })} />啟用商品</label>
               <button className="primaryAction" onClick={saveProduct}><Save size={18} /> 儲存商品</button>
             </div>
           ) : null}
@@ -1696,9 +1770,10 @@ function TierManager(props: { tiers: CustomerTier[]; saveTier: (tier: CustomerTi
   );
 }
 
-function UserManager(props: { users: User[]; tiers: CustomerTier[]; saveUser: (user: User & { password?: string }) => void }) {
+function UserManager(props: { users: User[]; tiers: CustomerTier[]; currentUserId: string; saveUser: (user: User & { password?: string }) => void; deleteUser: (user: User) => Promise<void> }) {
   const newUser = (): User & { password?: string } => ({ id: `user-${Date.now()}`, loginId: "", name: "", email: "", password: "changeme123", role: "customer", customerTierId: props.tiers[0]?.id, allowedPaymentMethods: ["credit_card"], isActive: true, taxId: "", companyName: "", contactName: "", shippingAddress: "", shippingDetail: "" });
   const [editing, setEditing] = useState<User & { password?: string }>(newUser);
+  const activeUsers = props.users.filter((user) => user.isActive);
   function toggleMethod(method: PaymentMethod) {
     setEditing((user) => ({ ...user, allowedPaymentMethods: user.allowedPaymentMethods.includes(method) ? user.allowedPaymentMethods.filter((entry) => entry !== method) : [...user.allowedPaymentMethods, method] }));
   }
@@ -1707,15 +1782,21 @@ function UserManager(props: { users: User[]; tiers: CustomerTier[]; saveUser: (u
     props.saveUser(editing);
     setEditing(newUser());
   }
+  async function remove(user: User) {
+    const confirmed = window.confirm(`確定要刪除帳號「${user.name}」？\n\n刪除後此帳號不能再登入；過去訂單紀錄不會刪除。`);
+    if (!confirmed) return;
+    await props.deleteUser(user);
+    if (editing.id === user.id) setEditing(newUser());
+  }
   return (
     <section className="fullSpan">
       <div className="sectionHeader"><div><h2>帳號管理</h2><p>客戶統編、名稱、聯絡人與送貨資訊只能由客服或管理員維護。</p></div><button onClick={() => setEditing(newUser())}><Plus size={18} /> 新增帳號</button></div>
       <div className="accountGrid">
         <div className="adminTable"><div className="tableHead userColumns"><span>登入 ID</span><span>名稱 / Email</span><span>角色</span><span>狀態</span><span>操作</span></div>
-          {props.users.map((user) => <div className="tableRow userColumns" key={user.id}><strong>{user.loginId}</strong><span>{user.name}<small>{user.email || "未設定 email"}</small></span><span>{roleText[user.role]}</span><span>{user.isActive ? "啟用" : "停用"}</span><button onClick={() => setEditing({ ...user, password: "" })}>編輯</button></div>)}
+          {activeUsers.map((user) => <div className="tableRow userColumns" key={user.id}><strong>{user.loginId}</strong><span>{user.name}<small>{user.email || "未設定 email"}</small></span><span>{roleText[user.role]}</span><span>{user.isActive ? "啟用" : "停用"}</span><div className="rowActions"><button onClick={() => setEditing({ ...user, password: "" })}>編輯</button><button className="dangerAction" disabled={user.id === props.currentUserId} onClick={() => void remove(user)}><Trash2 size={16} /> 刪除</button></div></div>)}
         </div>
         <div className="editPanel">
-          <h3>{props.users.some((user) => user.id === editing.id) ? "編輯帳號" : "新增帳號"}</h3>
+          <h3>{activeUsers.some((user) => user.id === editing.id) ? "編輯帳號" : "新增帳號"}</h3>
           <label>登入 ID<input value={editing.loginId} onChange={(event) => setEditing({ ...editing, loginId: event.target.value })} placeholder="例如：admin、hotel01" /></label>
           <label>帳號顯示名稱<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} placeholder="例如：沐森旅店" /></label>
           <label>Email<input value={editing.email} onChange={(event) => setEditing({ ...editing, email: event.target.value })} placeholder="通知用，可留空" /></label>

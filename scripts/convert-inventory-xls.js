@@ -31,6 +31,10 @@ const stockIndex = indexOf("目前總數量");
 const priceColumns = headers
   .map((header, index) => ({ header, index }))
   .filter(({ header }) => header && header.endsWith("價"));
+const priceTierMap = {
+  "直營價": { scopeName: "直營", scopeCode: "distributor" },
+  "經銷價": { scopeName: "經銷", scopeCode: "wholesale" },
+};
 
 function toNumber(value, fallback = 0) {
   if (value === "" || value === null || value === undefined) return fallback;
@@ -61,7 +65,14 @@ const products = rows.slice(headerIndex + 1)
       isActive: true,
       visibleToAll: true,
       prices: priceColumns
-        .map(({ header, index }) => ({ scopeType: "customer_tier", scopeName: header, price: toNumber(row[index], NaN), currency: "TWD", isActive: true }))
+        .map(({ header, index }) => ({
+          scopeType: "customer_tier",
+          scopeName: priceTierMap[header]?.scopeName ?? header.replace(/價$/, ""),
+          scopeCode: priceTierMap[header]?.scopeCode ?? "",
+          price: toNumber(row[index], NaN),
+          currency: "TWD",
+          isActive: true,
+        }))
         .filter((price) => Number.isFinite(price.price)),
     };
   })
@@ -72,7 +83,7 @@ const output = {
   sourceFile: path.basename(inputPath),
   convertedAt: new Date().toISOString(),
   notes: [
-    "價格使用 Excel 欄名對應客戶等級名稱或代碼，例如：直營價、經銷價。",
+    "價格使用 scopeName 對應客戶等級名稱，scopeCode 對應客戶等級代碼；直營價會轉為 直營/distributor，經銷價會轉為 經銷/wholesale。",
     "規格寫入 packSize；輔助數量同時寫入 moq 與 orderIncrement。",
   ],
   products,

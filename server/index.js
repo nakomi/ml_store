@@ -8,9 +8,11 @@ import { fileURLToPath } from "node:url";
 import {
   acceptRevision,
   archiveProduct,
+  clearProductTestData,
   createOrder,
   databaseUrl,
   deleteTier,
+  deleteUser,
   findActiveUserById,
   findActiveUserByLoginId,
   importProductsFromJson,
@@ -161,6 +163,14 @@ app.post("/api/users", requireAuth, requireAdmin, asyncRoute(async (req, res) =>
   res.json({ users: updated.users.map(publicUser) });
 }));
 
+app.delete("/api/users/:id", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  if (req.params.id === req.user.id) return res.status(400).json({ message: "不能刪除目前登入中的管理員帳號。" });
+  const deleted = await deleteUser(req.params.id);
+  if (!deleted) return res.status(404).json({ message: "找不到帳號。" });
+  const updated = await readStore();
+  res.json({ user: publicUser(deleted), users: updated.users.map(publicUser) });
+}));
+
 app.post("/api/customer-tiers", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
   const store = await readStore();
   const tier = req.body;
@@ -194,6 +204,11 @@ app.post("/api/products", requireAuth, requireAdmin, asyncRoute(async (req, res)
   await upsertProduct(product);
   const updated = await readStore();
   res.json({ products: updated.products });
+}));
+
+app.delete("/api/products/test-data", requireAuth, requireAdmin, asyncRoute(async (_req, res) => {
+  const result = await clearProductTestData();
+  res.json({ result, products: [], prices: [], visibilityRules: [] });
 }));
 
 app.patch("/api/products/:id", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
