@@ -92,7 +92,11 @@ label {
   display: flex;
   flex-direction: column;
   gap: 22px;
+  height: 100vh;
+  overflow: hidden;
   padding: 22px;
+  position: sticky;
+  top: 0;
 }
 
 .mobileMenuButton {
@@ -122,6 +126,10 @@ label {
 .sidebar nav {
   display: grid;
   gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
 }
 
 .sidebar nav button {
@@ -1446,6 +1454,8 @@ section {
 @media (max-width: 760px) {
   .sidebar {
     gap: 0;
+    height: auto;
+    overflow: visible;
     padding: 14px;
     position: sticky;
     top: 0;
@@ -1482,15 +1492,17 @@ section {
 
   .sidebar.open nav {
     box-shadow: 0 16px 30px rgba(18, 43, 50, 0.22);
+    max-height: calc(100vh - 156px);
+    overflow-y: auto;
     top: 70px;
   }
 
   .sidebar.open .account {
     border-radius: 0;
     box-shadow: 0 16px 30px rgba(18, 43, 50, 0.22);
+    bottom: 0;
     margin-top: 0;
     padding-top: 0;
-    top: 266px;
   }
 
   .topbar,
