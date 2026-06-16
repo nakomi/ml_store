@@ -46,6 +46,16 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.dangerAction {
+  border-color: #d6b6b6;
+  color: #9f2d2d;
+}
+
+.dangerAction:hover:not(:disabled) {
+  border-color: #b42323;
+  color: #8a1f1f;
+}
+
 input,
 select,
 textarea {
@@ -1097,7 +1107,7 @@ section {
 }
 
 .tierColumns {
-  grid-template-columns: 120px minmax(180px, 1fr) 90px 90px;
+  grid-template-columns: 120px minmax(180px, 1fr) 90px 170px;
 }
 
 .accountGrid {

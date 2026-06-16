@@ -7,8 +7,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   acceptRevision,
+  archiveProduct,
   createOrder,
   databaseUrl,
+  deleteTier,
   findActiveUserById,
   findActiveUserByLoginId,
   importProductsFromJson,
@@ -170,6 +172,19 @@ app.post("/api/customer-tiers", requireAuth, requireAdmin, asyncRoute(async (req
   res.json({ customerTiers: updated.customerTiers });
 }));
 
+app.delete("/api/customer-tiers/:id", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const result = await deleteTier(req.params.id);
+  if (!result) return res.status(404).json({ message: "找不到客戶等級。" });
+  const updated = await readStore();
+  res.json({
+    result,
+    customerTiers: updated.customerTiers,
+    users: updated.users.map(publicUser),
+    prices: updated.prices,
+    visibilityRules: updated.visibilityRules,
+  });
+}));
+
 app.post("/api/products", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
   const store = await readStore();
   const product = req.body;
@@ -183,6 +198,12 @@ app.post("/api/products", requireAuth, requireAdmin, asyncRoute(async (req, res)
 
 app.patch("/api/products/:id", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
   const product = await patchProduct(req.params.id, req.body);
+  if (!product) return res.status(404).json({ message: "找不到商品。" });
+  res.json({ product });
+}));
+
+app.delete("/api/products/:id", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
+  const product = await archiveProduct(req.params.id);
   if (!product) return res.status(404).json({ message: "找不到商品。" });
   res.json({ product });
 }));

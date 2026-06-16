@@ -421,6 +421,29 @@ export async function upsertTier(tier, client = pool) {
   return saved;
 }
 
+export async function deleteTier(id) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT id FROM customer_tiers WHERE id = $1", [id]);
+    if (!existing.rows[0]) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const prices = await client.query("DELETE FROM product_prices WHERE scope_type = 'customer_tier' AND scope_id = $1", [id]);
+    const rules = await client.query("DELETE FROM visibility_rules WHERE rule_type = 'visible_to_customer_tier' AND scope_id = $1", [id]);
+    const users = await client.query("UPDATE app_users SET customer_tier_id = NULL WHERE customer_tier_id = $1", [id]);
+    await client.query("DELETE FROM customer_tiers WHERE id = $1", [id]);
+    await client.query("COMMIT");
+    return { deletedPrices: prices.rowCount, deletedVisibilityRules: rules.rowCount, updatedUsers: users.rowCount };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function upsertUser(user, client = pool) {
   const existing = user.id ? await client.query("SELECT password_hash FROM app_users WHERE id = $1", [user.id]) : { rows: [] };
   const saved = {
@@ -494,6 +517,10 @@ export async function patchProduct(id, patch) {
   const current = (await readStore()).products.find((product) => product.id === id);
   if (!current) return null;
   return upsertProduct({ ...current, ...patch, id });
+}
+
+export async function archiveProduct(id) {
+  return patchProduct(id, { isActive: false, isOrderable: false });
 }
 
 export async function upsertPrice(price, client = pool) {

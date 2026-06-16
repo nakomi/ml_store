@@ -345,10 +345,22 @@ function App() {
     setNotice(`客戶等級 ${tier.name} 已儲存。`);
   }
 
+  async function deleteTier(tier: CustomerTier) {
+    const result = await apiRequest<{ result: { deletedPrices: number; deletedVisibilityRules: number; updatedUsers: number }; customerTiers: CustomerTier[]; users: User[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[] }>(`/api/customer-tiers/${tier.id}`, token, { method: "DELETE" });
+    setData((prev) => prev ? { ...prev, customerTiers: result.customerTiers, users: result.users, prices: result.prices, visibilityRules: result.visibilityRules } : prev);
+    setNotice(`已刪除客戶等級 ${tier.name}，並移除 ${result.result.deletedPrices} 筆相關價格。`);
+  }
+
   async function saveProduct(product: Product) {
     const result = await apiRequest<{ products: Product[] }>("/api/products", token, { method: "POST", body: JSON.stringify(product) });
     setData((prev) => prev ? { ...prev, products: result.products } : prev);
     setNotice(`商品 ${product.name} 已儲存。`);
+  }
+
+  async function archiveProduct(product: Product) {
+    const result = await apiRequest<{ product: Product }>(`/api/products/${product.id}`, token, { method: "DELETE" });
+    setData((prev) => prev ? { ...prev, products: prev.products.map((entry) => entry.id === product.id ? result.product : entry) } : prev);
+    setNotice(`商品 ${product.name} 已封存。`);
   }
 
   async function savePrice(price: ProductPrice) {
@@ -553,7 +565,9 @@ function App() {
             adminTab={adminTab}
             saveUser={saveUser}
             saveTier={saveTier}
+            deleteTier={deleteTier}
             saveProduct={saveProduct}
+            archiveProduct={archiveProduct}
             savePrice={savePrice}
             saveVisibilityRule={saveVisibilityRule}
             exportProductsJson={exportProductsJson}
@@ -1033,7 +1047,9 @@ function AdminPortal(props: {
   adminTab: "orders" | "products" | "users" | "tiers";
   saveUser: (user: User & { password?: string }) => void;
   saveTier: (tier: CustomerTier & { description?: string }) => void;
+  deleteTier: (tier: CustomerTier) => void;
   saveProduct: (product: Product) => void;
+  archiveProduct: (product: Product) => Promise<void>;
   savePrice: (price: ProductPrice) => void;
   saveVisibilityRule: (rule: VisibilityRule) => void;
   products: Product[];
@@ -1051,9 +1067,9 @@ function AdminPortal(props: {
   return (
     <div className="adminGrid">
       {props.adminTab === "orders" ? <OrderReviewManager users={props.users} orders={props.orders} reviseOrder={props.reviseOrder} updateOrderStatus={props.updateOrderStatus} markPaid={props.markPaid} exportOrders={props.exportOrders} /> : null}
-      {props.adminTab === "products" ? <ProductSettingsManagerV2 products={props.products} prices={props.prices} rules={props.rules} users={props.users} tiers={props.tiers} saveProduct={props.saveProduct} savePrice={props.savePrice} saveVisibilityRule={props.saveVisibilityRule} toggleProductOrderable={props.toggleProductOrderable} exportProductsJson={props.exportProductsJson} importProductsJson={props.importProductsJson} /> : null}
+      {props.adminTab === "products" ? <ProductSettingsManagerV2 products={props.products} prices={props.prices} rules={props.rules} users={props.users} tiers={props.tiers} saveProduct={props.saveProduct} archiveProduct={props.archiveProduct} savePrice={props.savePrice} saveVisibilityRule={props.saveVisibilityRule} toggleProductOrderable={props.toggleProductOrderable} exportProductsJson={props.exportProductsJson} importProductsJson={props.importProductsJson} /> : null}
       {props.adminTab === "users" ? <UserManager users={props.users} tiers={props.tiers} saveUser={props.saveUser} /> : null}
-      {props.adminTab === "tiers" ? <TierManager tiers={props.tiers} saveTier={props.saveTier} /> : null}
+      {props.adminTab === "tiers" ? <TierManager tiers={props.tiers} saveTier={props.saveTier} deleteTier={props.deleteTier} /> : null}
     </div>
   );
 }
@@ -1254,6 +1270,7 @@ function ProductSettingsManagerV2(props: {
   users: User[];
   tiers: CustomerTier[];
   saveProduct: (product: Product) => void;
+  archiveProduct: (product: Product) => Promise<void>;
   savePrice: (price: ProductPrice) => void;
   saveVisibilityRule: (rule: VisibilityRule) => void;
   toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
@@ -1324,6 +1341,13 @@ function ProductSettingsManagerV2(props: {
     props.saveProduct(productForm);
     setSelectedProductId(productForm.id);
   };
+  const archiveSelectedProduct = async () => {
+    if (!selectedProduct) return;
+    const confirmed = window.confirm(`確定要封存商品「${selectedProduct.name}」？\n\n封存後客戶前台不會再顯示此商品，也不可下單；過去訂單紀錄不會受到影響。`);
+    if (!confirmed) return;
+    await props.archiveProduct(selectedProduct);
+    setProductForm({ ...selectedProduct, isActive: false, isOrderable: false });
+  };
   const savePrice = () => {
     if (!priceForm.productId) return;
     props.savePrice(priceForm);
@@ -1364,7 +1388,7 @@ function ProductSettingsManagerV2(props: {
           <div className="productPickerList">
             {filteredProducts.map((product) => (
               <button className={product.id === selectedProductId ? "productPick active" : "productPick"} key={product.id} onClick={() => selectProduct(product)}>
-                <strong>{product.sku}</strong><span>{product.name}</span><small>{product.isOrderable ? "可下單" : "不可下單"} / 價格 {props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆 / 庫存 {product.stockQuantity}</small>
+                <strong>{product.sku}</strong><span>{product.name}</span><small>{product.isActive ? product.isOrderable ? "可下單" : "不可下單" : "已封存"} / 價格 {props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆 / 庫存 {product.stockQuantity}</small>
               </button>
             ))}
           </div>
@@ -1372,7 +1396,7 @@ function ProductSettingsManagerV2(props: {
         <div className="productEditor">
           <div className="productEditorHeader">
             <div><p className="eyebrow">{selectedProduct ? selectedProduct.sku : "新增商品"}</p><h3>{selectedProduct ? selectedProduct.name : "建立新商品"}</h3></div>
-            {selectedProduct ? <label className="switchLabel"><input type="checkbox" checked={selectedProduct.isOrderable} onChange={(event) => props.toggleProductOrderable(selectedProduct, event.target.checked)} />{selectedProduct.isOrderable ? "可下單" : "不可下單"}</label> : null}
+            {selectedProduct ? <div className="rowActions"><label className="switchLabel"><input type="checkbox" checked={selectedProduct.isOrderable} disabled={!selectedProduct.isActive} onChange={(event) => props.toggleProductOrderable(selectedProduct, event.target.checked)} />{selectedProduct.isActive ? selectedProduct.isOrderable ? "可下單" : "不可下單" : "已封存"}</label><button className="dangerAction" disabled={!selectedProduct.isActive} onClick={() => void archiveSelectedProduct()}><Trash2 size={16} /> 封存商品</button></div> : null}
           </div>
           <div className="productPanelTabs">
             <button className={activePanel === "details" ? "active" : ""} onClick={() => setActivePanel("details")}><Package size={18} /> 商品內容</button>
@@ -1627,13 +1651,19 @@ function OrderManager(props: {
   );
 }
 
-function TierManager(props: { tiers: CustomerTier[]; saveTier: (tier: CustomerTier & { description?: string }) => void }) {
+function TierManager(props: { tiers: CustomerTier[]; saveTier: (tier: CustomerTier & { description?: string }) => void; deleteTier: (tier: CustomerTier) => void }) {
   const newTier = (): CustomerTier & { description?: string } => ({ id: `tier-${Date.now()}`, code: "", name: "", description: "", isActive: true });
   const [editing, setEditing] = useState<CustomerTier & { description?: string }>(newTier);
   function save() {
     if (!editing.code.trim() || !editing.name.trim()) return;
     props.saveTier(editing);
     setEditing(newTier());
+  }
+  function remove(tier: CustomerTier) {
+    const confirmed = window.confirm(`確定要刪除客戶等級「${tier.name}」？\n\n此操作會同時刪除該等級相關的價格設定，並清空使用此等級的客戶帳號等級。`);
+    if (!confirmed) return;
+    props.deleteTier(tier);
+    if (editing.id === tier.id) setEditing(newTier());
   }
   return (
     <section className="fullSpan">
@@ -1649,7 +1679,7 @@ function TierManager(props: { tiers: CustomerTier[]; saveTier: (tier: CustomerTi
               <strong>{tier.code}</strong>
               <span>{tier.name}</span>
               <span>{tier.isActive ? "啟用" : "停用"}</span>
-              <button onClick={() => setEditing(tier)}>編輯</button>
+              <div className="rowActions"><button onClick={() => setEditing(tier)}>編輯</button><button className="dangerAction" onClick={() => remove(tier)}><Trash2 size={16} /> 刪除</button></div>
             </div>
           ))}
         </div>
