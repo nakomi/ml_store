@@ -290,6 +290,18 @@ section {
   margin-bottom: 0;
 }
 
+.headerActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.hiddenFileInput {
+  display: none;
+}
+
 .tools {
   align-items: flex-start;
   display: flex;
@@ -1141,6 +1153,95 @@ section {
   margin-bottom: 18px;
 }
 
+.productWorkspace {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 330px minmax(0, 1fr);
+}
+
+.productPicker {
+  border: 1px solid #d9e1e5;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.productPickerList {
+  display: grid;
+  gap: 8px;
+  max-height: 68vh;
+  overflow: auto;
+}
+
+.productPick {
+  align-items: start;
+  display: grid;
+  gap: 4px;
+  justify-content: stretch;
+  min-height: auto;
+  padding: 11px 12px;
+  text-align: left;
+}
+
+.productPick.active {
+  background: #edf7f8;
+  border-color: #236f7f;
+}
+
+.productPick span,
+.productPick small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.productEditor {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.productEditorHeader {
+  align-items: center;
+  border: 1px solid #d9e1e5;
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  padding: 14px;
+}
+
+.productEditorHeader h3 {
+  margin: 0;
+}
+
+.productPanelTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.productPanelTabs button.active {
+  background: #143842;
+  border-color: #143842;
+  color: #ffffff;
+}
+
+.productPanelGrid {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 340px minmax(0, 1fr);
+}
+
+.selectedPriceColumns {
+  grid-template-columns: minmax(180px, 1fr) 100px 76px;
+}
+
+.selectedVisibilityColumns {
+  grid-template-columns: minmax(220px, 1fr) 80px 76px;
+}
+
 .settingsGrid > .editPanel > .formSplit:first-of-type label:nth-child(2) {
   display: none;
 }
@@ -1403,14 +1504,22 @@ section {
   .userColumns,
   .tierColumns,
   .settingsGrid,
+  .productWorkspace,
+  .productPanelGrid,
   .ruleGrid,
   .formSplit,
   .priceColumns,
   .visibilityColumns,
+  .selectedPriceColumns,
+  .selectedVisibilityColumns,
   .productListRow,
   .accountGrid,
   .detailModal {
     grid-template-columns: 1fr;
+  }
+
+  .productPickerList {
+    max-height: 360px;
   }
 
   .cartDrawer {

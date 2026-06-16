@@ -11,6 +11,7 @@
     "db:start": "powershell -ExecutionPolicy Bypass -File scripts/start-postgres.ps1",
     "db:stop": "powershell -ExecutionPolicy Bypass -File scripts/stop-postgres.ps1",
     "db:status": "powershell -ExecutionPolicy Bypass -File scripts/status-postgres.ps1",
+    "convert:inventory": "node scripts/convert-inventory-xls.js",
     "deploy:start": "powershell -ExecutionPolicy Bypass -File scripts/deploy-start.ps1",
     "deploy:stop": "powershell -ExecutionPolicy Bypass -File scripts/deploy-stop.ps1",
     "start": "node server/index.js",
@@ -34,7 +35,8 @@
   "devDependencies": {
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "xlsx": "^0.18.5"
   },
   "overrides": {
     "shell-quote": "1.8.4"

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Bell,
@@ -19,6 +19,7 @@ import {
   ShoppingCart,
   Trash2,
   UserRound,
+  Upload,
   X,
 } from "lucide-react";
 import "./styles.css";
@@ -46,7 +47,7 @@ type User = {
   shippingAddress?: string;
   shippingDetail?: string;
 };
-type Product = { id: string; sku: string; name: string; brand: string; series: string; category: string; description: string; image: string; salesUnit: string; packSize: string; moq: number; orderIncrement: number; isOrderable: boolean; isActive: boolean };
+type Product = { id: string; sku: string; name: string; brand: string; series: string; category: string; description: string; image: string; salesUnit: string; packSize: string; moq: number; orderIncrement: number; stockQuantity: number; isOrderable: boolean; isActive: boolean };
 type ProductPrice = { id: string; productId: string; scopeType: PriceScope; scopeId: string | null; price: number; currency: "TWD"; isActive: boolean };
 type VisibilityRule = { id: string; productId: string; ruleType: VisibilityRuleType; scopeId: string | null; isActive: boolean };
 type CartItem = { productId: string; quantity: number };
@@ -57,6 +58,7 @@ type CustomerSnapshot = { taxId: string; companyName: string; contactName: strin
 type Order = { id: string; orderNo: string; customerId: string; customerSnapshot?: CustomerSnapshot; orderStatus: OrderStatus; paymentStatus: PaymentStatus; selectedPaymentMethod: PaymentMethod; items: OrderItem[]; subtotal: number; adjustmentTotal: number; freightTotal: number; grandTotal: number; customerNote: string; adminNote: string; submittedAt: string; confirmedAt?: string; revisions: OrderRevision[]; paymentRecords: PaymentRecord[] };
 type OrderRevisionInput = { items: Pick<OrderItem, "id" | "productId" | "quantity" | "unitPriceSnapshot">[]; adjustmentTotal: number; freightTotal: number; adminNote: string; changeSummary: string };
 type Bootstrap = { customerTiers: CustomerTier[]; users: User[]; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[]; orders: Order[] };
+type ProductImportResult = { importedProducts: number; importedPrices: number; importedVisibilityRules: number; skippedPrices: { sku: string; scopeName: string; price: number }[]; errors: string[] };
 
 const cartStorageKey = "b2b-store-cart";
 const allCategory = "全部";
@@ -162,6 +164,15 @@ function downloadExcelXml(fileName: string, sheets: { name: string; rows: Record
   };
   const workbook = `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">${sheets.map((sheet) => sheetXml(sheet.name, sheet.rows)).join("")}</Workbook>`;
   const url = URL.createObjectURL(new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadJson(fileName: string, data: unknown) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }));
   const link = document.createElement("a");
   link.href = url;
   link.download = fileName;
@@ -360,6 +371,56 @@ function App() {
     setData((prev) => prev ? { ...prev, products: prev.products.map((entry) => entry.id === product.id ? result.product : entry) } : prev);
   }
 
+  function exportProductsJson() {
+    const payload = {
+      schema: "ml-store-products-v1",
+      exportedAt: new Date().toISOString(),
+      products: appData.products.map((product) => ({
+        sku: product.sku,
+        name: product.name,
+        brand: product.brand,
+        series: product.series,
+        category: product.category,
+        description: product.description,
+        image: product.image,
+        salesUnit: product.salesUnit,
+        packSize: product.packSize,
+        moq: product.moq,
+        orderIncrement: product.orderIncrement,
+        stockQuantity: product.stockQuantity,
+        isOrderable: product.isOrderable,
+        isActive: product.isActive,
+        visibleToAll: appData.visibilityRules.some((rule) => rule.productId === product.id && rule.ruleType === "visible_to_all" && rule.isActive),
+        prices: appData.prices
+          .filter((price) => price.productId === product.id && price.isActive)
+          .map((price) => ({
+            scopeType: price.scopeType,
+            scopeName: price.scopeType === "default"
+              ? "預設價格"
+              : price.scopeType === "customer_tier"
+                ? appData.customerTiers.find((tier) => tier.id === price.scopeId)?.name ?? price.scopeId
+                : appData.users.find((user) => user.id === price.scopeId)?.name ?? price.scopeId,
+            price: price.price,
+            currency: price.currency,
+            isActive: price.isActive,
+          })),
+      })),
+    };
+    downloadJson("ml-store-products.json", payload);
+  }
+
+  async function importProductsJson(file: File) {
+    const payload = JSON.parse(await file.text()) as unknown;
+    const response = await apiRequest<{ result: ProductImportResult; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[] }>("/api/products/import", token, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    setData((prev) => prev ? { ...prev, products: response.products, prices: response.prices, visibilityRules: response.visibilityRules } : prev);
+    const skipped = response.result.skippedPrices.length > 0 ? `，${response.result.skippedPrices.length} 筆價格找不到對應客戶等級` : "";
+    const errors = response.result.errors.length > 0 ? `，${response.result.errors.length} 筆商品未匯入` : "";
+    setNotice(`已匯入 ${response.result.importedProducts} 筆商品與 ${response.result.importedPrices} 筆價格${skipped}${errors}。`);
+  }
+
   async function reviseOrder(orderId: string, revision: OrderRevisionInput) {
     const result = await apiRequest<{ orders: Order[] }>(`/api/orders/${orderId}/revise`, token, {
       method: "POST",
@@ -495,6 +556,8 @@ function App() {
             saveProduct={saveProduct}
             savePrice={savePrice}
             saveVisibilityRule={saveVisibilityRule}
+            exportProductsJson={exportProductsJson}
+            importProductsJson={importProductsJson}
             products={appData.products}
             prices={appData.prices}
             rules={appData.visibilityRules}
@@ -982,11 +1045,13 @@ function AdminPortal(props: {
   updateOrderStatus: (orderId: string, orderStatus: OrderStatus, adminNote: string) => void;
   markPaid: (orderId: string) => void;
   exportOrders: () => void;
+  exportProductsJson: () => void;
+  importProductsJson: (file: File) => Promise<void>;
 }) {
   return (
     <div className="adminGrid">
       {props.adminTab === "orders" ? <OrderReviewManager users={props.users} orders={props.orders} reviseOrder={props.reviseOrder} updateOrderStatus={props.updateOrderStatus} markPaid={props.markPaid} exportOrders={props.exportOrders} /> : null}
-      {props.adminTab === "products" ? <ProductSettingsManager products={props.products} prices={props.prices} rules={props.rules} users={props.users} tiers={props.tiers} saveProduct={props.saveProduct} savePrice={props.savePrice} saveVisibilityRule={props.saveVisibilityRule} toggleProductOrderable={props.toggleProductOrderable} /> : null}
+      {props.adminTab === "products" ? <ProductSettingsManagerV2 products={props.products} prices={props.prices} rules={props.rules} users={props.users} tiers={props.tiers} saveProduct={props.saveProduct} savePrice={props.savePrice} saveVisibilityRule={props.saveVisibilityRule} toggleProductOrderable={props.toggleProductOrderable} exportProductsJson={props.exportProductsJson} importProductsJson={props.importProductsJson} /> : null}
       {props.adminTab === "users" ? <UserManager users={props.users} tiers={props.tiers} saveUser={props.saveUser} /> : null}
       {props.adminTab === "tiers" ? <TierManager tiers={props.tiers} saveTier={props.saveTier} /> : null}
     </div>
@@ -1003,8 +1068,12 @@ function ProductSettingsManager(props: {
   savePrice: (price: ProductPrice) => void;
   saveVisibilityRule: (rule: VisibilityRule) => void;
   toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
+  exportProductsJson: () => void;
+  importProductsJson: (file: File) => Promise<void>;
 }) {
   const customers = props.users.filter((user) => user.role === "customer");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
   const newProduct = (): Product => ({
     id: `product-${Date.now()}`,
     sku: "",
@@ -1018,6 +1087,7 @@ function ProductSettingsManager(props: {
     packSize: "",
     moq: 1,
     orderIncrement: 1,
+    stockQuantity: 0,
     isOrderable: true,
     isActive: true,
   });
@@ -1065,23 +1135,40 @@ function ProductSettingsManager(props: {
     props.saveVisibilityRule(ruleForm);
     setRuleForm(newRule());
   };
+  const importJson = async (file: File | undefined) => {
+    if (!file) return;
+    setIsImporting(true);
+    try {
+      await props.importProductsJson(file);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "匯入商品 JSON 失敗。");
+    } finally {
+      setIsImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   return (
     <section className="fullSpan">
       <div className="sectionHeader">
         <div><h2>商品 / 價格 / 客戶類別設定</h2><p>集中維護商品主檔、下單狀態、價格套用對象與商品可見規則。</p></div>
-        <button onClick={() => setProductForm(newProduct())}><Plus size={18} /> 新增商品</button>
+        <div className="headerActions">
+          <button onClick={props.exportProductsJson}><Download size={18} /> 匯出商品 JSON</button>
+          <button disabled={isImporting} onClick={() => fileInputRef.current?.click()}><Upload size={18} /> {isImporting ? "匯入中" : "匯入商品 JSON"}</button>
+          <button onClick={() => setProductForm(newProduct())}><Plus size={18} /> 新增商品</button>
+          <input ref={fileInputRef} className="hiddenFileInput" type="file" accept="application/json,.json" onChange={(event) => void importJson(event.target.files?.[0])} />
+        </div>
       </div>
       <div className="settingsGrid">
         <div className="adminTable">
-          <div className="tableHead productColumns"><span>SKU</span><span>商品</span><span>下單</span><span>價格</span><span>可見</span><span>操作</span></div>
+          <div className="tableHead productColumns"><span>SKU</span><span>商品</span><span>下單</span><span>價格</span><span>庫存</span><span>操作</span></div>
           {props.products.map((product) => (
             <div className="tableRow productColumns" key={product.id}>
               <strong>{product.sku}</strong>
               <span>{product.name}<small>{product.brand} / {product.category}</small></span>
               <label className="switchLabel"><input type="checkbox" checked={product.isOrderable} onChange={(event) => props.toggleProductOrderable(product, event.target.checked)} />{product.isOrderable ? "可下單" : "不可下單"}</label>
               <span>{props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆</span>
-              <span>{props.rules.filter((rule) => rule.productId === product.id && rule.isActive).length} 筆</span>
+              <span>{product.stockQuantity}</span>
               <button onClick={() => setProductForm(product)}>編輯</button>
             </div>
           ))}
@@ -1105,6 +1192,7 @@ function ProductSettingsManager(props: {
             <label>MOQ<input type="number" min="1" value={productForm.moq} onChange={(event) => setProductForm({ ...productForm, moq: Number(event.target.value) })} /></label>
             <label>下單倍數<input type="number" min="1" value={productForm.orderIncrement} onChange={(event) => setProductForm({ ...productForm, orderIncrement: Number(event.target.value) })} /></label>
           </div>
+          <label>目前庫存<input type="number" min="0" value={productForm.stockQuantity} onChange={(event) => setProductForm({ ...productForm, stockQuantity: Number(event.target.value) })} /></label>
           <label className="switchLabel"><input type="checkbox" checked={productForm.isOrderable} onChange={(event) => setProductForm({ ...productForm, isOrderable: event.target.checked })} />可下單</label>
           <label className="switchLabel"><input type="checkbox" checked={productForm.isActive} onChange={(event) => setProductForm({ ...productForm, isActive: event.target.checked })} />啟用商品</label>
           <button className="primaryAction" onClick={saveProduct}><Save size={18} /> 儲存商品</button>
@@ -1153,6 +1241,194 @@ function ProductSettingsManager(props: {
               <button onClick={() => setRuleForm(rule)}>編輯</button>
             </div>
           ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ProductSettingsManagerV2(props: {
+  products: Product[];
+  prices: ProductPrice[];
+  rules: VisibilityRule[];
+  users: User[];
+  tiers: CustomerTier[];
+  saveProduct: (product: Product) => void;
+  savePrice: (price: ProductPrice) => void;
+  saveVisibilityRule: (rule: VisibilityRule) => void;
+  toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
+  exportProductsJson: () => void;
+  importProductsJson: (file: File) => Promise<void>;
+}) {
+  const customers = props.users.filter((user) => user.role === "customer");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedProductId, setSelectedProductId] = useState(props.products[0]?.id ?? "");
+  const [activePanel, setActivePanel] = useState<"details" | "prices" | "visibility">("details");
+  const blankProduct = (): Product => ({
+    id: `product-${Date.now()}`,
+    sku: "",
+    name: "",
+    brand: "",
+    series: "",
+    category: "",
+    description: "",
+    image: "",
+    salesUnit: "件",
+    packSize: "",
+    moq: 1,
+    orderIncrement: 1,
+    stockQuantity: 0,
+    isOrderable: true,
+    isActive: true,
+  });
+  const blankPrice = (productId = selectedProductId): ProductPrice => ({ id: "", productId, scopeType: "default", scopeId: null, price: 0, currency: "TWD", isActive: true });
+  const blankRule = (productId = selectedProductId): VisibilityRule => ({ id: "", productId, ruleType: "visible_to_all", scopeId: null, isActive: true });
+  const [productForm, setProductForm] = useState<Product>(() => props.products[0] ?? blankProduct());
+  const [priceForm, setPriceForm] = useState<ProductPrice>(() => blankPrice(props.products[0]?.id ?? ""));
+  const [ruleForm, setRuleForm] = useState<VisibilityRule>(() => blankRule(props.products[0]?.id ?? ""));
+  const selectedProduct = props.products.find((product) => product.id === selectedProductId) ?? null;
+  const selectedPrices = selectedProduct ? props.prices.filter((price) => price.productId === selectedProduct.id) : [];
+  const selectedRules = selectedProduct ? props.rules.filter((rule) => rule.productId === selectedProduct.id) : [];
+  const filteredProducts = props.products.filter((product) => {
+    const keyword = productSearch.trim().toLowerCase();
+    return !keyword || [product.sku, product.name, product.brand, product.category].some((value) => value.toLowerCase().includes(keyword));
+  });
+  const priceScopeText: Record<PriceScope, string> = { default: "預設價格", customer_tier: "客戶等級價格", customer: "指定客戶價格" };
+  const ruleText: Record<VisibilityRuleType, string> = { visible_to_all: "全部客戶可見", visible_to_customer_tier: "指定客戶等級可見", visible_to_customer: "指定客戶可見", hidden_from_customer: "指定客戶隱藏" };
+  const targetName = (type: PriceScope | VisibilityRuleType, scopeId: string | null) => {
+    if (!scopeId) return "全部客戶";
+    if (type === "customer_tier" || type === "visible_to_customer_tier") return props.tiers.find((tier) => tier.id === scopeId)?.name ?? scopeId;
+    return customers.find((user) => user.id === scopeId)?.name ?? scopeId;
+  };
+  const selectProduct = (product: Product) => {
+    setSelectedProductId(product.id);
+    setProductForm(product);
+    setPriceForm(blankPrice(product.id));
+    setRuleForm(blankRule(product.id));
+    setActivePanel("details");
+  };
+  const createProduct = () => {
+    const draft = blankProduct();
+    setSelectedProductId("");
+    setProductForm(draft);
+    setPriceForm(blankPrice(draft.id));
+    setRuleForm(blankRule(draft.id));
+    setActivePanel("details");
+  };
+  const setPriceScope = (scopeType: PriceScope) => setPriceForm({ ...priceForm, scopeType, scopeId: scopeType === "default" ? null : scopeType === "customer_tier" ? props.tiers[0]?.id ?? null : customers[0]?.id ?? null });
+  const setRuleType = (ruleType: VisibilityRuleType) => setRuleForm({ ...ruleForm, ruleType, scopeId: ruleType === "visible_to_all" ? null : ruleType === "visible_to_customer_tier" ? props.tiers[0]?.id ?? null : customers[0]?.id ?? null });
+  const saveProduct = () => {
+    if (!productForm.sku.trim() || !productForm.name.trim()) return;
+    props.saveProduct(productForm);
+    setSelectedProductId(productForm.id);
+  };
+  const savePrice = () => {
+    if (!priceForm.productId) return;
+    props.savePrice(priceForm);
+    setPriceForm(blankPrice(priceForm.productId));
+  };
+  const saveRule = () => {
+    if (!ruleForm.productId) return;
+    props.saveVisibilityRule(ruleForm);
+    setRuleForm(blankRule(ruleForm.productId));
+  };
+  const importJson = async (file: File | undefined) => {
+    if (!file) return;
+    setIsImporting(true);
+    try {
+      await props.importProductsJson(file);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "匯入商品 JSON 失敗。");
+    } finally {
+      setIsImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  return (
+    <section className="fullSpan">
+      <div className="sectionHeader">
+        <div><h2>商品管理</h2><p>先選擇商品，再維護該商品的內容、價格與可見性。</p></div>
+        <div className="headerActions">
+          <button onClick={props.exportProductsJson}><Download size={18} /> 匯出商品 JSON</button>
+          <button disabled={isImporting} onClick={() => fileInputRef.current?.click()}><Upload size={18} /> {isImporting ? "匯入中" : "匯入商品 JSON"}</button>
+          <button onClick={createProduct}><Plus size={18} /> 新增商品</button>
+          <input ref={fileInputRef} className="hiddenFileInput" type="file" accept="application/json,.json" onChange={(event) => void importJson(event.target.files?.[0])} />
+        </div>
+      </div>
+      <div className="productWorkspace">
+        <aside className="productPicker">
+          <div className="inputWithIcon"><Search size={16} /><input value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="搜尋 SKU、商品名稱" /></div>
+          <div className="productPickerList">
+            {filteredProducts.map((product) => (
+              <button className={product.id === selectedProductId ? "productPick active" : "productPick"} key={product.id} onClick={() => selectProduct(product)}>
+                <strong>{product.sku}</strong><span>{product.name}</span><small>{product.isOrderable ? "可下單" : "不可下單"} / 價格 {props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆 / 庫存 {product.stockQuantity}</small>
+              </button>
+            ))}
+          </div>
+        </aside>
+        <div className="productEditor">
+          <div className="productEditorHeader">
+            <div><p className="eyebrow">{selectedProduct ? selectedProduct.sku : "新增商品"}</p><h3>{selectedProduct ? selectedProduct.name : "建立新商品"}</h3></div>
+            {selectedProduct ? <label className="switchLabel"><input type="checkbox" checked={selectedProduct.isOrderable} onChange={(event) => props.toggleProductOrderable(selectedProduct, event.target.checked)} />{selectedProduct.isOrderable ? "可下單" : "不可下單"}</label> : null}
+          </div>
+          <div className="productPanelTabs">
+            <button className={activePanel === "details" ? "active" : ""} onClick={() => setActivePanel("details")}><Package size={18} /> 商品內容</button>
+            <button className={activePanel === "prices" ? "active" : ""} disabled={!selectedProduct} onClick={() => { setPriceForm(blankPrice(selectedProduct?.id)); setActivePanel("prices"); }}><CreditCard size={18} /> 價格</button>
+            <button className={activePanel === "visibility" ? "active" : ""} disabled={!selectedProduct} onClick={() => { setRuleForm(blankRule(selectedProduct?.id)); setActivePanel("visibility"); }}><Eye size={18} /> 可見性</button>
+          </div>
+          {activePanel === "details" ? (
+            <div className="editPanel">
+              <h3>{selectedProduct ? "商品內容" : "新增商品"}</h3>
+              <label>SKU<input value={productForm.sku} onChange={(event) => setProductForm({ ...productForm, sku: event.target.value })} /></label>
+              <label>商品名稱<input value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} /></label>
+              <div className="formSplit"><label>品牌<input value={productForm.brand} onChange={(event) => setProductForm({ ...productForm, brand: event.target.value })} /></label><label>系列<input value={productForm.series} onChange={(event) => setProductForm({ ...productForm, series: event.target.value })} /></label></div>
+              <label>分類<input value={productForm.category} onChange={(event) => setProductForm({ ...productForm, category: event.target.value })} /></label>
+              <label>商品圖片 URL<input value={productForm.image} onChange={(event) => setProductForm({ ...productForm, image: event.target.value })} /></label>
+              <label>描述<textarea value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} /></label>
+              <div className="formSplit"><label>銷售單位<input value={productForm.salesUnit} onChange={(event) => setProductForm({ ...productForm, salesUnit: event.target.value })} /></label><label>數量規格<input value={productForm.packSize} onChange={(event) => setProductForm({ ...productForm, packSize: event.target.value })} /></label></div>
+              <div className="formSplit"><label>起訂量<input type="number" min="1" value={productForm.moq} onChange={(event) => setProductForm({ ...productForm, moq: Number(event.target.value) })} /></label><label>下單倍數<input type="number" min="1" value={productForm.orderIncrement} onChange={(event) => setProductForm({ ...productForm, orderIncrement: Number(event.target.value) })} /></label></div>
+              <label>目前庫存<input type="number" min="0" value={productForm.stockQuantity} onChange={(event) => setProductForm({ ...productForm, stockQuantity: Number(event.target.value) })} /></label>
+              <label className="switchLabel"><input type="checkbox" checked={productForm.isOrderable} onChange={(event) => setProductForm({ ...productForm, isOrderable: event.target.checked })} />可下單</label>
+              <label className="switchLabel"><input type="checkbox" checked={productForm.isActive} onChange={(event) => setProductForm({ ...productForm, isActive: event.target.checked })} />啟用商品</label>
+              <button className="primaryAction" onClick={saveProduct}><Save size={18} /> 儲存商品</button>
+            </div>
+          ) : null}
+          {activePanel === "prices" && selectedProduct ? (
+            <div className="productPanelGrid">
+              <div className="editPanel">
+                <h3>{priceForm.id ? "編輯價格" : "新增價格"}</h3>
+                <label>價格類型<select value={priceForm.scopeType} onChange={(event) => setPriceScope(event.target.value as PriceScope)}>{(Object.keys(priceScopeText) as PriceScope[]).map((scope) => <option key={scope} value={scope}>{priceScopeText[scope]}</option>)}</select></label>
+                {priceForm.scopeType === "customer_tier" ? <label>客戶等級<select value={priceForm.scopeId ?? ""} onChange={(event) => setPriceForm({ ...priceForm, scopeId: event.target.value })}>{props.tiers.map((tier) => <option key={tier.id} value={tier.id}>{tier.name}</option>)}</select></label> : null}
+                {priceForm.scopeType === "customer" ? <label>指定客戶<select value={priceForm.scopeId ?? ""} onChange={(event) => setPriceForm({ ...priceForm, scopeId: event.target.value })}>{customers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label> : null}
+                <label>價格<input type="number" min="0" value={priceForm.price} onChange={(event) => setPriceForm({ ...priceForm, price: Number(event.target.value) })} /></label>
+                <label className="switchLabel"><input type="checkbox" checked={priceForm.isActive} onChange={(event) => setPriceForm({ ...priceForm, isActive: event.target.checked })} />啟用價格</label>
+                <button className="primaryAction" onClick={savePrice}><Save size={18} /> 儲存價格</button>
+              </div>
+              <div className="adminTable compactTable">
+                <div className="tableHead selectedPriceColumns"><span>對象</span><span>價格</span><span>操作</span></div>
+                {selectedPrices.map((price) => <div className="tableRow selectedPriceColumns" key={price.id}><span>{priceScopeText[price.scopeType]}<small>{targetName(price.scopeType, price.scopeId)}</small></span><strong>{money(price.price)}</strong><button onClick={() => setPriceForm(price)}>編輯</button></div>)}
+              </div>
+            </div>
+          ) : null}
+          {activePanel === "visibility" && selectedProduct ? (
+            <div className="productPanelGrid">
+              <div className="editPanel">
+                <h3>{ruleForm.id ? "編輯可見性" : "新增可見性"}</h3>
+                <label>規則<select value={ruleForm.ruleType} onChange={(event) => setRuleType(event.target.value as VisibilityRuleType)}>{(Object.keys(ruleText) as VisibilityRuleType[]).map((rule) => <option key={rule} value={rule}>{ruleText[rule]}</option>)}</select></label>
+                {ruleForm.ruleType === "visible_to_customer_tier" ? <label>客戶等級<select value={ruleForm.scopeId ?? ""} onChange={(event) => setRuleForm({ ...ruleForm, scopeId: event.target.value })}>{props.tiers.map((tier) => <option key={tier.id} value={tier.id}>{tier.name}</option>)}</select></label> : null}
+                {(ruleForm.ruleType === "visible_to_customer" || ruleForm.ruleType === "hidden_from_customer") ? <label>指定客戶<select value={ruleForm.scopeId ?? ""} onChange={(event) => setRuleForm({ ...ruleForm, scopeId: event.target.value })}>{customers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label> : null}
+                <label className="switchLabel"><input type="checkbox" checked={ruleForm.isActive} onChange={(event) => setRuleForm({ ...ruleForm, isActive: event.target.checked })} />啟用規則</label>
+                <button className="primaryAction" onClick={saveRule}><Save size={18} /> 儲存規則</button>
+              </div>
+              <div className="adminTable compactTable">
+                <div className="tableHead selectedVisibilityColumns"><span>規則</span><span>狀態</span><span>操作</span></div>
+                {selectedRules.map((rule) => <div className="tableRow selectedVisibilityColumns" key={rule.id}><span>{ruleText[rule.ruleType]}<small>{targetName(rule.ruleType, rule.scopeId)}</small></span><span>{rule.isActive ? "啟用" : "停用"}</span><button onClick={() => setRuleForm(rule)}>編輯</button></div>)}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </section>

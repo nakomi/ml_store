@@ -42,10 +42,10 @@ function defaultSeedStore() {
       { id: "cust-2", loginId: "salon", name: "青禾沙龍", email: "salon@example.com", role: "customer", customerTierId: "tier-a", allowedPaymentMethods: ["credit_card"], isActive: true, taxId: "87654321", companyName: "青禾沙龍有限公司", contactName: "林先生", shippingAddress: "台中市西屯區市政北二路 88 號", shippingDetail: "請送至 3 樓櫃台", passwordHash: customerHash },
     ],
     products: [
-      { id: "p1", sku: "SH-001-300", name: "柔順洗髮精 300ml", brand: "ML Lab", series: "", category: "洗沐", description: "適合飯店備品與日常零售的溫和洗髮精。", image: "https://images.unsplash.com/photo-1608248543803-ba4f8c70ae0b?auto=format&fit=crop&w=900&q=80", salesUnit: "瓶", packSize: "24 瓶/箱", moq: 24, orderIncrement: 24, isOrderable: true, isActive: true },
-      { id: "p2", sku: "SH-001-4000", name: "柔順洗髮精 4000ml", brand: "ML Lab", series: "", category: "洗沐", description: "大容量補充桶，適合飯店與沙龍後場使用。", image: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?auto=format&fit=crop&w=900&q=80", salesUnit: "桶", packSize: "4 桶/箱", moq: 4, orderIncrement: 4, isOrderable: true, isActive: true },
-      { id: "p3", sku: "OEM-FACE-001", name: "OEM 溫和潔面乳", brand: "Private Label", series: "", category: "臉部保養", description: "可供品牌客戶進行配方與包裝客製。", image: "https://images.unsplash.com/photo-1596755389378-c31d21fd1273?auto=format&fit=crop&w=900&q=80", salesUnit: "瓶", packSize: "120 瓶/箱", moq: 120, orderIncrement: 120, isOrderable: false, isActive: true },
-      { id: "p4", sku: "BD-002-500", name: "草本沐浴乳 500ml", brand: "Aroma Pro", series: "", category: "洗沐", description: "清爽草本香氣，適合通路與團購銷售。", image: "https://images.unsplash.com/photo-1600857544200-b2f666a9a2ec?auto=format&fit=crop&w=900&q=80", salesUnit: "瓶", packSize: "12 瓶/箱", moq: 12, orderIncrement: 12, isOrderable: false, isActive: true },
+      { id: "p1", sku: "SH-001-300", name: "柔順洗髮精 300ml", brand: "ML Lab", series: "", category: "洗沐", description: "適合飯店備品與日常零售的溫和洗髮精。", image: "https://images.unsplash.com/photo-1608248543803-ba4f8c70ae0b?auto=format&fit=crop&w=900&q=80", salesUnit: "瓶", packSize: "24 瓶/箱", moq: 24, orderIncrement: 24, stockQuantity: 0, isOrderable: true, isActive: true },
+      { id: "p2", sku: "SH-001-4000", name: "柔順洗髮精 4000ml", brand: "ML Lab", series: "", category: "洗沐", description: "大容量補充桶，適合飯店與沙龍後場使用。", image: "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?auto=format&fit=crop&w=900&q=80", salesUnit: "桶", packSize: "4 桶/箱", moq: 4, orderIncrement: 4, stockQuantity: 0, isOrderable: true, isActive: true },
+      { id: "p3", sku: "OEM-FACE-001", name: "OEM 溫和潔面乳", brand: "Private Label", series: "", category: "臉部保養", description: "可供品牌客戶進行配方與包裝客製。", image: "https://images.unsplash.com/photo-1596755389378-c31d21fd1273?auto=format&fit=crop&w=900&q=80", salesUnit: "瓶", packSize: "120 瓶/箱", moq: 120, orderIncrement: 120, stockQuantity: 0, isOrderable: false, isActive: true },
+      { id: "p4", sku: "BD-002-500", name: "草本沐浴乳 500ml", brand: "Aroma Pro", series: "", category: "洗沐", description: "清爽草本香氣，適合通路與團購銷售。", image: "https://images.unsplash.com/photo-1600857544200-b2f666a9a2ec?auto=format&fit=crop&w=900&q=80", salesUnit: "瓶", packSize: "12 瓶/箱", moq: 12, orderIncrement: 12, stockQuantity: 0, isOrderable: false, isActive: true },
     ],
     prices: [
       { id: "pr1", productId: "p1", scopeType: "default", scopeId: null, price: 180, currency: "TWD", isActive: true },
@@ -115,6 +115,7 @@ function mapProductRow(row) {
     packSize: row.pack_size,
     moq: Number(row.moq),
     orderIncrement: Number(row.order_increment),
+    stockQuantity: Number(row.stock_quantity ?? 0),
     isOrderable: row.is_orderable,
     isActive: row.is_active,
   };
@@ -232,6 +233,7 @@ export async function initDb() {
       pack_size TEXT NOT NULL DEFAULT '',
       moq INTEGER NOT NULL DEFAULT 1,
       order_increment INTEGER NOT NULL DEFAULT 1,
+      stock_quantity INTEGER NOT NULL DEFAULT 0,
       is_orderable BOOLEAN NOT NULL DEFAULT TRUE,
       is_active BOOLEAN NOT NULL DEFAULT TRUE
     );
@@ -320,6 +322,7 @@ export async function initDb() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_visibility_rules_unique_scope ON visibility_rules (product_id, rule_type, COALESCE(scope_id, '__null__'));
     CREATE SEQUENCE IF NOT EXISTS b2b_order_no_seq START 1;
   `);
+  await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_quantity INTEGER NOT NULL DEFAULT 0");
 
   const existing = await pool.query("SELECT COUNT(*)::int AS count FROM app_users");
   if (existing.rows[0].count === 0) {
@@ -458,9 +461,13 @@ export async function upsertUser(user, client = pool) {
 }
 
 export async function upsertProduct(product, client = pool) {
+  const sku = String(product.sku ?? "").trim();
+  const existing = product.id
+    ? await client.query("SELECT id FROM products WHERE id = $1", [product.id])
+    : await client.query("SELECT id FROM products WHERE LOWER(sku) = LOWER($1)", [sku]);
   const saved = {
-    id: product.id || makeId("product"),
-    sku: String(product.sku ?? "").trim(),
+    id: existing.rows[0]?.id || product.id || makeId("product"),
+    sku,
     name: String(product.name ?? "").trim(),
     brand: String(product.brand ?? "").trim(),
     series: "",
@@ -471,14 +478,15 @@ export async function upsertProduct(product, client = pool) {
     packSize: String(product.packSize ?? "").trim(),
     moq: Math.max(1, Number(product.moq) || 1),
     orderIncrement: Math.max(1, Number(product.orderIncrement) || 1),
+    stockQuantity: Math.max(0, Number(product.stockQuantity) || 0),
     isOrderable: Boolean(product.isOrderable),
     isActive: Boolean(product.isActive),
   };
   await client.query(`
-    INSERT INTO products (id, sku, name, brand, series, category, description, image, sales_unit, pack_size, moq, order_increment, is_orderable, is_active)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-    ON CONFLICT (id) DO UPDATE SET sku = EXCLUDED.sku, name = EXCLUDED.name, brand = EXCLUDED.brand, series = EXCLUDED.series, category = EXCLUDED.category, description = EXCLUDED.description, image = EXCLUDED.image, sales_unit = EXCLUDED.sales_unit, pack_size = EXCLUDED.pack_size, moq = EXCLUDED.moq, order_increment = EXCLUDED.order_increment, is_orderable = EXCLUDED.is_orderable, is_active = EXCLUDED.is_active
-  `, [saved.id, saved.sku, saved.name, saved.brand, saved.series, saved.category, saved.description, saved.image, saved.salesUnit, saved.packSize, saved.moq, saved.orderIncrement, saved.isOrderable, saved.isActive]);
+    INSERT INTO products (id, sku, name, brand, series, category, description, image, sales_unit, pack_size, moq, order_increment, stock_quantity, is_orderable, is_active)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+    ON CONFLICT (id) DO UPDATE SET sku = EXCLUDED.sku, name = EXCLUDED.name, brand = EXCLUDED.brand, series = EXCLUDED.series, category = EXCLUDED.category, description = EXCLUDED.description, image = EXCLUDED.image, sales_unit = EXCLUDED.sales_unit, pack_size = EXCLUDED.pack_size, moq = EXCLUDED.moq, order_increment = EXCLUDED.order_increment, stock_quantity = EXCLUDED.stock_quantity, is_orderable = EXCLUDED.is_orderable, is_active = EXCLUDED.is_active
+  `, [saved.id, saved.sku, saved.name, saved.brand, saved.series, saved.category, saved.description, saved.image, saved.salesUnit, saved.packSize, saved.moq, saved.orderIncrement, saved.stockQuantity, saved.isOrderable, saved.isActive]);
   return saved;
 }
 
@@ -540,6 +548,91 @@ export async function upsertVisibilityRule(rule, client = pool) {
     ON CONFLICT (product_id, rule_type, (COALESCE(scope_id, '__null__'))) DO UPDATE SET id = EXCLUDED.id, is_active = EXCLUDED.is_active
   `, [saved.id, saved.productId, saved.ruleType, saved.scopeId, saved.isActive]);
   return saved;
+}
+
+function normalizeLookup(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function resolveImportPriceScope(price, tiers, users) {
+  if (price.scopeType === "default" || price.scopeName === "預設價格" || price.scopeName === "default") {
+    return { scopeType: "default", scopeId: null };
+  }
+  if (price.scopeType === "customer") {
+    const key = normalizeLookup(price.scopeName ?? price.scopeId);
+    const customer = users.find((user) => user.role === "customer" && [user.id, user.name, user.loginId, user.companyName].some((value) => normalizeLookup(value) === key));
+    return customer ? { scopeType: "customer", scopeId: customer.id } : null;
+  }
+  const key = normalizeLookup(price.scopeName ?? price.scopeId ?? price.tierName);
+  const tier = tiers.find((entry) => [entry.id, entry.code, entry.name].some((value) => normalizeLookup(value) === key));
+  return tier ? { scopeType: "customer_tier", scopeId: tier.id } : null;
+}
+
+export async function importProductsFromJson(payload) {
+  const products = Array.isArray(payload?.products) ? payload.products : [];
+  if (products.length === 0) throw new Error("匯入 JSON 必須包含 products 陣列。");
+
+  const client = await pool.connect();
+  const result = { importedProducts: 0, importedPrices: 0, importedVisibilityRules: 0, skippedPrices: [], errors: [] };
+  try {
+    await client.query("BEGIN");
+    const store = await readStore();
+    for (const [index, entry] of products.entries()) {
+      const sku = String(entry.sku ?? "").trim();
+      const name = String(entry.name ?? "").trim();
+      if (!sku || !name) {
+        result.errors.push(`第 ${index + 1} 筆缺少 SKU 或商品名稱。`);
+        continue;
+      }
+
+      const savedProduct = await upsertProduct({
+        ...entry,
+        sku,
+        name,
+        category: entry.category ?? payload.defaultCategory ?? "",
+        brand: entry.brand ?? payload.defaultBrand ?? "",
+        salesUnit: entry.salesUnit ?? entry.unit ?? "件",
+        packSize: entry.packSize ?? entry.spec ?? "",
+        moq: entry.moq ?? entry.orderIncrement ?? 1,
+        orderIncrement: entry.orderIncrement ?? entry.moq ?? 1,
+        stockQuantity: entry.stockQuantity ?? entry.stock ?? 0,
+        isOrderable: entry.isOrderable ?? true,
+        isActive: entry.isActive ?? true,
+      }, client);
+      result.importedProducts += 1;
+
+      const prices = Array.isArray(entry.prices) ? entry.prices : [];
+      for (const priceEntry of prices) {
+        const price = Number(priceEntry.price);
+        if (!Number.isFinite(price) || price < 0) continue;
+        const scope = resolveImportPriceScope(priceEntry, store.customerTiers, store.users);
+        if (!scope) {
+          result.skippedPrices.push({ sku, scopeName: priceEntry.scopeName ?? priceEntry.tierName ?? priceEntry.scopeId ?? "", price });
+          continue;
+        }
+        await upsertPrice({
+          productId: savedProduct.id,
+          scopeType: scope.scopeType,
+          scopeId: scope.scopeId,
+          price,
+          isActive: priceEntry.isActive ?? true,
+        }, client);
+        result.importedPrices += 1;
+      }
+
+      if (entry.visibleToAll ?? true) {
+        await upsertVisibilityRule({ productId: savedProduct.id, ruleType: "visible_to_all", scopeId: null, isActive: true }, client);
+        result.importedVisibilityRules += 1;
+      }
+    }
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function insertOrder(order, client = pool) {
