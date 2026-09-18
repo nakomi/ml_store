@@ -1,0 +1,35 @@
+export type Role = "admin" | "customer";
+export type PriceScope = "default" | "customer_tier" | "customer";
+export type VisibilityRuleType = "visible_to_all" | "visible_to_customer_tier" | "visible_to_customer" | "hidden_from_customer";
+export type PaymentMethod = "monthly_billing" | "bank_transfer" | "credit_card";
+export type PaymentStatus = "not_required" | "pending" | "monthly_billing" | "paid" | "failed" | "cancelled" | "refunded";
+export type OrderStatus = "submitted" | "admin_reviewing" | "revised" | "customer_accepted_revision" | "confirmed" | "processing" | "shipped" | "completed" | "cancelled";
+
+export type CustomerTier = { id: string; code: string; name: string; isActive: boolean };
+export type User = {
+  id: string;
+  loginId: string;
+  name: string;
+  email: string;
+  role: Role;
+  customerTierId?: string;
+  allowedPaymentMethods: PaymentMethod[];
+  isActive: boolean;
+  taxId?: string;
+  companyName?: string;
+  contactName?: string;
+  shippingAddress?: string;
+  shippingDetail?: string;
+};
+export type Product = { id: string; sku: string; name: string; brand: string; series: string; category: string; description: string; image: string; salesUnit: string; packSize: string; moq: number; orderIncrement: number; stockQuantity?: number; isOrderable: boolean; isActive: boolean };
+export type ProductPrice = { id: string; productId: string; scopeType: PriceScope; scopeId: string | null; price: number; currency: "TWD"; isActive: boolean };
+export type VisibilityRule = { id: string; productId: string; ruleType: VisibilityRuleType; scopeId: string | null; isActive: boolean };
+export type CartItem = { productId: string; quantity: number };
+export type OrderItem = { id: string; productId: string; skuSnapshot: string; productNameSnapshot: string; brandSnapshot: string; salesUnitSnapshot: string; packSizeSnapshot: string; unitPriceSnapshot: number; quantity: number; subtotal: number };
+export type OrderRevision = { id: string; revisedBy: string; previousTotal: number; newTotal: number; changeSummary: string; beforeSnapshot: OrderItem[]; afterSnapshot: OrderItem[]; customerAcceptanceRequired: boolean; customerAcceptedAt?: string; createdAt: string };
+export type PaymentRecord = { id: string; method: PaymentMethod; provider: "manual" | "ecpay" | "newebpay" | "tappay"; amount: number; status: PaymentStatus; paidAt?: string };
+export type CustomerSnapshot = { taxId: string; companyName: string; contactName: string; shippingAddress: string; shippingDetail: string };
+export type Order = { id: string; orderNo: string; customerId: string; customerSnapshot?: CustomerSnapshot; orderStatus: OrderStatus; paymentStatus: PaymentStatus; selectedPaymentMethod: PaymentMethod; items: OrderItem[]; subtotal: number; adjustmentTotal: number; freightTotal: number; grandTotal: number; customerNote: string; adminNote: string; submittedAt: string; confirmedAt?: string; revisions: OrderRevision[]; paymentRecords: PaymentRecord[] };
+export type OrderRevisionInput = { items: Pick<OrderItem, "id" | "productId" | "quantity" | "unitPriceSnapshot">[]; adjustmentTotal: number; freightTotal: number; adminNote: string; changeSummary: string };
+export type Bootstrap = { customerTiers: CustomerTier[]; users: User[]; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[]; orders: Order[] };
+export type ProductImportResult = { importedProducts: number; importedPrices: number; importedVisibilityRules: number; createdTiers: number; skippedPrices: { sku: string; scopeName: string; price: number }[]; errors: string[] };

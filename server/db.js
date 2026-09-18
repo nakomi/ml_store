@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import fs from "node:fs";
 import path from "node:path";
 import pg from "pg";
+import { normalizeTimestamp, now } from "./time.js";
 
 const { Pool } = pg;
 
@@ -14,9 +15,7 @@ export const pool = new Pool({
   max: Number(process.env.PG_POOL_MAX ?? 10),
 });
 
-export function now() {
-  return new Date().toLocaleString("zh-TW", { timeZone: "Asia/Taipei", hour12: false });
-}
+export { now };
 
 export function makeId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -154,8 +153,8 @@ function mapRevisionRow(row) {
     beforeSnapshot: row.before_snapshot ?? [],
     afterSnapshot: row.after_snapshot ?? [],
     customerAcceptanceRequired: row.customer_acceptance_required,
-    customerAcceptedAt: row.customer_accepted_at ?? undefined,
-    createdAt: row.created_at,
+    customerAcceptedAt: normalizeTimestamp(row.customer_accepted_at) ?? undefined,
+    createdAt: normalizeTimestamp(row.created_at),
   };
 }
 
@@ -166,7 +165,7 @@ function mapPaymentRow(row) {
     provider: row.provider,
     amount: Number(row.amount),
     status: row.status,
-    paidAt: row.paid_at ?? undefined,
+    paidAt: normalizeTimestamp(row.paid_at) ?? undefined,
   };
 }
 
@@ -186,8 +185,8 @@ function mapOrderRow(row, items, revisions, paymentRecords) {
     grandTotal: Number(row.grand_total),
     customerNote: row.customer_note ?? "",
     adminNote: row.admin_note ?? "",
-    submittedAt: row.submitted_at,
-    confirmedAt: row.confirmed_at ?? undefined,
+    submittedAt: normalizeTimestamp(row.submitted_at),
+    confirmedAt: normalizeTimestamp(row.confirmed_at) ?? undefined,
     revisions,
     paymentRecords,
   };
@@ -262,6 +261,7 @@ export async function initDb() {
       id TEXT PRIMARY KEY,
       order_no TEXT NOT NULL UNIQUE,
       customer_id TEXT NOT NULL REFERENCES app_users(id),
+      idempotency_key TEXT,
       customer_snapshot JSONB,
       order_status TEXT NOT NULL,
       payment_status TEXT NOT NULL,
@@ -272,8 +272,8 @@ export async function initDb() {
       grand_total INTEGER NOT NULL DEFAULT 0,
       customer_note TEXT NOT NULL DEFAULT '',
       admin_note TEXT NOT NULL DEFAULT '',
-      submitted_at TEXT NOT NULL,
-      confirmed_at TEXT
+      submitted_at TIMESTAMPTZ NOT NULL,
+      confirmed_at TIMESTAMPTZ
     );
 
     CREATE TABLE IF NOT EXISTS order_items (
@@ -300,8 +300,8 @@ export async function initDb() {
       before_snapshot JSONB NOT NULL DEFAULT '[]'::jsonb,
       after_snapshot JSONB NOT NULL DEFAULT '[]'::jsonb,
       customer_acceptance_required BOOLEAN NOT NULL DEFAULT FALSE,
-      customer_accepted_at TEXT,
-      created_at TEXT NOT NULL
+      customer_accepted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS payment_records (
@@ -311,7 +311,7 @@ export async function initDb() {
       provider TEXT NOT NULL,
       amount INTEGER NOT NULL,
       status TEXT NOT NULL,
-      paid_at TEXT
+      paid_at TIMESTAMPTZ
     );
 
     CREATE INDEX IF NOT EXISTS idx_orders_customer_id ON orders(customer_id);
@@ -323,10 +323,45 @@ export async function initDb() {
     CREATE SEQUENCE IF NOT EXISTS b2b_order_no_seq START 1;
   `);
   await pool.query("ALTER TABLE products ADD COLUMN IF NOT EXISTS stock_quantity INTEGER NOT NULL DEFAULT 0");
+  await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS idempotency_key TEXT");
+  await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_customer_idempotency ON orders(customer_id, idempotency_key) WHERE idempotency_key IS NOT NULL");
+  await migrateTimestampColumns();
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_login_id_ci ON app_users(LOWER(login_id));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_app_users_email_ci ON app_users(LOWER(email)) WHERE email <> '';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_tiers_code_ci ON customer_tiers(LOWER(code));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_products_sku_ci ON products(LOWER(sku));
+    CREATE INDEX IF NOT EXISTS idx_orders_submitted_at ON orders(submitted_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(order_status);
+  `);
 
   const existing = await pool.query("SELECT COUNT(*)::int AS count FROM app_users");
   if (existing.rows[0].count === 0) {
-    await seedDatabase(seedSourceStore());
+    if (process.env.NODE_ENV === "production") {
+      const password = process.env.INITIAL_ADMIN_PASSWORD ?? "";
+      if (password.length < 12) {
+        throw new Error("An empty production database requires INITIAL_ADMIN_PASSWORD with at least 12 characters.");
+      }
+      await seedDatabase({
+        customerTiers: [],
+        users: [{
+          id: makeId("admin"),
+          loginId: process.env.INITIAL_ADMIN_LOGIN_ID?.trim() || "admin",
+          name: process.env.INITIAL_ADMIN_NAME?.trim() || "系統管理員",
+          email: process.env.INITIAL_ADMIN_EMAIL?.trim() || "",
+          role: "admin",
+          allowedPaymentMethods: [],
+          isActive: true,
+          password,
+        }],
+        products: [],
+        prices: [],
+        visibilityRules: [],
+        orders: [],
+      });
+    } else {
+      await seedDatabase(seedSourceStore());
+    }
   }
   await syncOrderSequence();
 }
@@ -361,22 +396,22 @@ export async function seedDatabase(store) {
   }
 }
 
-export async function readStore() {
+export async function readStore(client = pool) {
   const [tiers, users, products, prices, rules, orders] = await Promise.all([
-    pool.query("SELECT * FROM customer_tiers ORDER BY code"),
-    pool.query("SELECT * FROM app_users ORDER BY role, login_id"),
-    pool.query("SELECT * FROM products ORDER BY sku"),
-    pool.query("SELECT * FROM product_prices ORDER BY product_id, scope_type, scope_id NULLS FIRST"),
-    pool.query("SELECT * FROM visibility_rules ORDER BY product_id, rule_type, scope_id NULLS FIRST"),
-    pool.query("SELECT * FROM orders ORDER BY submitted_at DESC, order_no DESC"),
+    client.query("SELECT * FROM customer_tiers ORDER BY code"),
+    client.query("SELECT * FROM app_users ORDER BY role, login_id"),
+    client.query("SELECT * FROM products ORDER BY sku"),
+    client.query("SELECT * FROM product_prices ORDER BY product_id, scope_type, scope_id NULLS FIRST"),
+    client.query("SELECT * FROM visibility_rules ORDER BY product_id, rule_type, scope_id NULLS FIRST"),
+    client.query("SELECT * FROM orders ORDER BY submitted_at DESC, order_no DESC"),
   ]);
 
   const orderIds = orders.rows.map((order) => order.id);
   const [items, revisions, payments] = orderIds.length > 0
     ? await Promise.all([
-      pool.query("SELECT * FROM order_items WHERE order_id = ANY($1) ORDER BY order_id, id", [orderIds]),
-      pool.query("SELECT * FROM order_revisions WHERE order_id = ANY($1) ORDER BY order_id, created_at DESC", [orderIds]),
-      pool.query("SELECT * FROM payment_records WHERE order_id = ANY($1) ORDER BY order_id, paid_at NULLS LAST, id", [orderIds]),
+      client.query("SELECT * FROM order_items WHERE order_id = ANY($1) ORDER BY order_id, id", [orderIds]),
+      client.query("SELECT * FROM order_revisions WHERE order_id = ANY($1) ORDER BY order_id, created_at DESC", [orderIds]),
+      client.query("SELECT * FROM payment_records WHERE order_id = ANY($1) ORDER BY order_id, paid_at NULLS LAST, id", [orderIds]),
     ])
     : [{ rows: [] }, { rows: [] }, { rows: [] }];
 
@@ -386,12 +421,7 @@ export async function readStore() {
     products: products.rows.map(mapProductRow),
     prices: prices.rows.map(mapPriceRow),
     visibilityRules: rules.rows.map(mapRuleRow),
-    orders: orders.rows.map((order) => mapOrderRow(
-      order,
-      items.rows.filter((item) => item.order_id === order.id).map(mapItemRow),
-      revisions.rows.filter((revision) => revision.order_id === order.id).map(mapRevisionRow),
-      payments.rows.filter((payment) => payment.order_id === order.id).map(mapPaymentRow),
-    )),
+    orders: mapOrders(orders.rows, items.rows, revisions.rows, payments.rows),
   };
 }
 
@@ -446,6 +476,9 @@ export async function deleteTier(id) {
 
 export async function upsertUser(user, client = pool) {
   const existing = user.id ? await client.query("SELECT password_hash FROM app_users WHERE id = $1", [user.id]) : { rows: [] };
+  let passwordHash = user.passwordHash ?? existing.rows[0]?.password_hash;
+  if (user.password) passwordHash = await bcrypt.hash(user.password, 10);
+  if (!passwordHash) passwordHash = await bcrypt.hash("changeme123", 10);
   const saved = {
     id: user.id || makeId("user"),
     loginId: String(user.loginId ?? "").trim(),
@@ -460,7 +493,7 @@ export async function upsertUser(user, client = pool) {
     shippingAddress: user.role === "customer" ? user.shippingAddress ?? "" : "",
     shippingDetail: user.role === "customer" ? user.shippingDetail ?? "" : "",
     isActive: Boolean(user.isActive),
-    passwordHash: user.password ? bcrypt.hashSync(user.password, 10) : user.passwordHash ?? existing.rows[0]?.password_hash ?? bcrypt.hashSync("changeme123", 10),
+    passwordHash,
   };
   await client.query(`
     INSERT INTO app_users (id, login_id, name, email, role, customer_tier_id, allowed_payment_methods, tax_id, company_name, contact_name, shipping_address, shipping_detail, is_active, password_hash)
@@ -652,7 +685,7 @@ export async function importProductsFromJson(payload) {
   const result = { importedProducts: 0, importedPrices: 0, importedVisibilityRules: 0, createdTiers: 0, skippedPrices: [], errors: [] };
   try {
     await client.query("BEGIN");
-    const store = await readStore();
+    const store = await readStore(client);
     for (const [index, entry] of products.entries()) {
       const sku = String(entry.sku ?? "").trim();
       const name = String(entry.name ?? "").trim();
@@ -712,14 +745,17 @@ export async function importProductsFromJson(payload) {
 }
 
 export async function insertOrder(order, client = pool) {
-  await client.query(`
-    INSERT INTO orders (id, order_no, customer_id, customer_snapshot, order_status, payment_status, selected_payment_method, subtotal, adjustment_total, freight_total, grand_total, customer_note, admin_note, submitted_at, confirmed_at)
-    VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-    ON CONFLICT (id) DO NOTHING
-  `, [order.id, order.orderNo, order.customerId, JSON.stringify(order.customerSnapshot ?? null), order.orderStatus, order.paymentStatus, order.selectedPaymentMethod, order.subtotal, order.adjustmentTotal, order.freightTotal, order.grandTotal, order.customerNote ?? "", order.adminNote ?? "", order.submittedAt, order.confirmedAt ?? null]);
+  const inserted = await client.query(`
+    INSERT INTO orders (id, order_no, customer_id, idempotency_key, customer_snapshot, order_status, payment_status, selected_payment_method, subtotal, adjustment_total, freight_total, grand_total, customer_note, admin_note, submitted_at, confirmed_at)
+    VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+    ON CONFLICT DO NOTHING
+    RETURNING id
+  `, [order.id, order.orderNo, order.customerId, order.idempotencyKey ?? null, JSON.stringify(order.customerSnapshot ?? null), order.orderStatus, order.paymentStatus, order.selectedPaymentMethod, order.subtotal, order.adjustmentTotal, order.freightTotal, order.grandTotal, order.customerNote ?? "", order.adminNote ?? "", normalizeTimestamp(order.submittedAt), normalizeTimestamp(order.confirmedAt)]);
+  if (!inserted.rows[0]) return false;
   for (const item of order.items ?? []) await upsertOrderItem(order.id, item, client);
   for (const revision of order.revisions ?? []) await insertRevision(order.id, revision, client);
   for (const record of order.paymentRecords ?? []) await insertPaymentRecord(order.id, record, client);
+  return true;
 }
 
 async function upsertOrderItem(orderId, item, client = pool) {
@@ -735,7 +771,7 @@ async function insertRevision(orderId, revision, client = pool) {
     INSERT INTO order_revisions (id, order_id, revised_by, previous_total, new_total, change_summary, before_snapshot, after_snapshot, customer_acceptance_required, customer_accepted_at, created_at)
     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11)
     ON CONFLICT (id) DO UPDATE SET customer_accepted_at = EXCLUDED.customer_accepted_at
-  `, [revision.id, orderId, revision.revisedBy, revision.previousTotal, revision.newTotal, revision.changeSummary, JSON.stringify(revision.beforeSnapshot ?? []), JSON.stringify(revision.afterSnapshot ?? []), Boolean(revision.customerAcceptanceRequired), revision.customerAcceptedAt ?? null, revision.createdAt]);
+  `, [revision.id, orderId, revision.revisedBy, revision.previousTotal, revision.newTotal, revision.changeSummary, JSON.stringify(revision.beforeSnapshot ?? []), JSON.stringify(revision.afterSnapshot ?? []), Boolean(revision.customerAcceptanceRequired), normalizeTimestamp(revision.customerAcceptedAt), normalizeTimestamp(revision.createdAt)]);
 }
 
 async function insertPaymentRecord(orderId, record, client = pool) {
@@ -743,33 +779,140 @@ async function insertPaymentRecord(orderId, record, client = pool) {
     INSERT INTO payment_records (id, order_id, method, provider, amount, status, paid_at)
     VALUES ($1, $2, $3, $4, $5, $6, $7)
     ON CONFLICT (id) DO NOTHING
-  `, [record.id, orderId, record.method, record.provider, record.amount, record.status, record.paidAt ?? null]);
+  `, [record.id, orderId, record.method, record.provider, record.amount, record.status, normalizeTimestamp(record.paidAt)]);
 }
 
 export async function createOrder(order) {
-  await insertOrder(order);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const created = await insertOrder(order, client);
+    if (!created) {
+      const existing = order.idempotencyKey
+        ? await client.query("SELECT id FROM orders WHERE customer_id = $1 AND idempotency_key = $2", [order.customerId, order.idempotencyKey])
+        : { rows: [] };
+      if (!existing.rows[0]) throw new Error("訂單建立失敗，請重新整理後再試。");
+      await client.query("COMMIT");
+      return { created: false, orderId: existing.rows[0].id };
+    }
+    await client.query("COMMIT");
+    return { created: true, orderId: order.id };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function readCustomerStore(customerId, client = pool) {
+  const [products, prices, rules, orders] = await Promise.all([
+    client.query("SELECT * FROM products WHERE is_active = TRUE ORDER BY sku"),
+    client.query("SELECT * FROM product_prices WHERE is_active = TRUE ORDER BY product_id, scope_type, scope_id NULLS FIRST"),
+    client.query("SELECT * FROM visibility_rules WHERE is_active = TRUE ORDER BY product_id, rule_type, scope_id NULLS FIRST"),
+    client.query("SELECT * FROM orders WHERE customer_id = $1 ORDER BY submitted_at DESC, order_no DESC", [customerId]),
+  ]);
+  const orderIds = orders.rows.map((order) => order.id);
+  const [items, revisions, payments] = orderIds.length > 0
+    ? await Promise.all([
+      client.query("SELECT * FROM order_items WHERE order_id = ANY($1) ORDER BY order_id, id", [orderIds]),
+      client.query("SELECT * FROM order_revisions WHERE order_id = ANY($1) ORDER BY order_id, created_at DESC", [orderIds]),
+      client.query("SELECT * FROM payment_records WHERE order_id = ANY($1) ORDER BY order_id, paid_at NULLS LAST, id", [orderIds]),
+    ])
+    : [{ rows: [] }, { rows: [] }, { rows: [] }];
+
+  return {
+    products: products.rows.map(mapProductRow),
+    prices: prices.rows.map(mapPriceRow),
+    visibilityRules: rules.rows.map(mapRuleRow),
+    orders: mapOrders(orders.rows, items.rows, revisions.rows, payments.rows),
+  };
+}
+
+function groupByOrderId(rows, mapper) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const values = grouped.get(row.order_id) ?? [];
+    values.push(mapper(row));
+    grouped.set(row.order_id, values);
+  }
+  return grouped;
+}
+
+function mapOrders(orderRows, itemRows, revisionRows, paymentRows) {
+  const items = groupByOrderId(itemRows, mapItemRow);
+  const revisions = groupByOrderId(revisionRows, mapRevisionRow);
+  const payments = groupByOrderId(paymentRows, mapPaymentRow);
+  return orderRows.map((order) => mapOrderRow(
+    order,
+    items.get(order.id) ?? [],
+    revisions.get(order.id) ?? [],
+    payments.get(order.id) ?? [],
+  ));
+}
+
+async function migrateTimestampColumns() {
+  const targets = [
+    ["orders", "submitted_at"],
+    ["orders", "confirmed_at"],
+    ["order_revisions", "customer_accepted_at"],
+    ["order_revisions", "created_at"],
+    ["payment_records", "paid_at"],
+  ];
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const [table, column] of targets) {
+      const metadata = await client.query(`
+        SELECT data_type FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+      `, [table, column]);
+      if (!["text", "character varying"].includes(metadata.rows[0]?.data_type)) continue;
+
+      const rows = await client.query(`SELECT id, ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL`);
+      for (const row of rows.rows) {
+        await client.query(`UPDATE ${table} SET ${column} = $1 WHERE id = $2`, [normalizeTimestamp(row.value), row.id]);
+      }
+      await client.query(`ALTER TABLE ${table} ALTER COLUMN ${column} TYPE TIMESTAMPTZ USING NULLIF(${column}, '')::timestamptz`);
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function reviseOrder(orderId, revisionInput, adminName) {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const store = await readStore();
+    const lockedOrder = await client.query("SELECT id FROM orders WHERE id = $1 FOR UPDATE", [orderId]);
+    if (!lockedOrder.rows[0]) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const store = await readStore(client);
     const order = store.orders.find((entry) => entry.id === orderId);
-    if (!order) return null;
     const before = order.items.map((item) => ({ ...item }));
     const requestedItems = Array.isArray(revisionInput?.items) ? revisionInput.items : [];
     const after = order.items.map((item) => {
       const requested = requestedItems.find((entry) => entry.id === item.id || entry.productId === item.productId);
-      const quantity = Math.max(0, Number(requested?.quantity ?? item.quantity) || 0);
-      const unitPriceSnapshot = Math.max(0, Number(requested?.unitPriceSnapshot ?? item.unitPriceSnapshot) || 0);
+      const quantity = Number(requested?.quantity ?? item.quantity);
+      const unitPriceSnapshot = Number(requested?.unitPriceSnapshot ?? item.unitPriceSnapshot);
+      if (!Number.isSafeInteger(quantity) || quantity < 0) throw new Error("修訂數量必須是 0 或正整數。");
+      if (!Number.isSafeInteger(unitPriceSnapshot) || unitPriceSnapshot < 0) throw new Error("修訂單價必須是 0 或正整數。");
       return { ...item, quantity, unitPriceSnapshot, subtotal: quantity * unitPriceSnapshot };
     }).filter((item) => item.quantity > 0);
     if (after.length === 0) throw new Error("訂單至少需要保留一個品項。");
-    const adjustmentTotal = Number(revisionInput?.adjustmentTotal ?? order.adjustmentTotal) || 0;
-    const freightTotal = Math.max(0, Number(revisionInput?.freightTotal ?? order.freightTotal) || 0);
+    const adjustmentTotal = Number(revisionInput?.adjustmentTotal ?? order.adjustmentTotal);
+    const freightTotal = Number(revisionInput?.freightTotal ?? order.freightTotal);
+    if (!Number.isSafeInteger(adjustmentTotal)) throw new Error("調整金額必須是整數。");
+    if (!Number.isSafeInteger(freightTotal) || freightTotal < 0) throw new Error("運費必須是 0 或正整數。");
     const subtotal = after.reduce((sum, item) => sum + item.subtotal, 0);
     const newTotal = subtotal + adjustmentTotal + freightTotal;
+    if (!Number.isSafeInteger(newTotal) || newTotal < 0) throw new Error("修訂後總金額不可小於 0。");
     const totalChanged = newTotal !== order.grandTotal;
     const revision = {
       id: makeId("rev"),
@@ -810,16 +953,59 @@ export async function updateOrderStatus(orderId, orderStatus, adminNote) {
 }
 
 export async function acceptRevision(orderId, customerId) {
-  await pool.query("UPDATE orders SET order_status = 'customer_accepted_revision' WHERE id = $1 AND customer_id = $2", [orderId, customerId]);
-  await pool.query(`
-    UPDATE order_revisions SET customer_accepted_at = $1
-    WHERE id = (
-      SELECT id FROM order_revisions WHERE order_id = $2 ORDER BY created_at DESC LIMIT 1
-    )
-  `, [now(), orderId]);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const order = await client.query(`
+      SELECT id FROM orders
+      WHERE id = $1 AND customer_id = $2 AND order_status = 'revised'
+      FOR UPDATE
+    `, [orderId, customerId]);
+    if (!order.rows[0]) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    const revision = await client.query(`
+      SELECT id FROM order_revisions
+      WHERE order_id = $1
+        AND customer_acceptance_required = TRUE
+        AND customer_accepted_at IS NULL
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+      FOR UPDATE
+    `, [orderId]);
+    if (!revision.rows[0]) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    await client.query("UPDATE order_revisions SET customer_accepted_at = $1 WHERE id = $2", [now(), revision.rows[0].id]);
+    await client.query("UPDATE orders SET order_status = 'customer_accepted_revision' WHERE id = $1", [orderId]);
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function markPaid(orderId, method, amount) {
-  await pool.query("UPDATE orders SET payment_status = 'paid' WHERE id = $1", [orderId]);
-  await insertPaymentRecord(orderId, { id: makeId("pay"), method, provider: "manual", amount, status: "paid", paidAt: now() });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const updated = await client.query("UPDATE orders SET payment_status = 'paid' WHERE id = $1 AND payment_status <> 'paid' RETURNING id", [orderId]);
+    if (!updated.rows[0]) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+    await insertPaymentRecord(orderId, { id: makeId("pay"), method, provider: "manual", amount, status: "paid", paidAt: now() }, client);
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

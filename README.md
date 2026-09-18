@@ -35,7 +35,7 @@ Payment gateway integration is intentionally excluded for now. The current imple
 - Node.js 20 or newer
 - npm
 
-The project currently uses `concurrently@9.x` and an npm override for `shell-quote@1.8.4` so it remains compatible with Node 20 while keeping `npm audit` clean.
+Runtime dependencies are kept separate from development-only build and inventory conversion tools. Run `npm audit` to check the complete dependency tree.
 
 PostgreSQL can run on the same server as the Node.js app. The API connects through `DATABASE_URL`.
 
@@ -80,6 +80,12 @@ Run the frontend and API together:
 npm run dev
 ```
 
+On Windows, the repository can also start its bundled local PostgreSQL instance before launching both services:
+
+```bash
+npm run dev:all
+```
+
 Or run them separately:
 
 ```bash
@@ -98,13 +104,21 @@ Build for production:
 npm run build
 ```
 
+Run the server and frontend unit tests:
+
+```bash
+npm test
+```
+
 Preview the production build:
 
 ```bash
 npm run preview
 ```
 
-## Demo Accounts
+## Development Demo Accounts
+
+These accounts are created only when a non-production database is initialized. Production never seeds these credentials.
 
 | Role | Login ID | Password |
 | --- | --- | --- |
@@ -128,7 +142,9 @@ On startup, the API creates the required tables if they do not exist:
 - `order_revisions`
 - `payment_records`
 
-If the database is empty, the API seeds demo customers, tiers, products, prices, and visibility rules. If an old local `data/store.json` file exists, it is used as the seed source for the first database initialization.
+If a non-production database is empty, the API seeds demo customers, tiers, products, prices, and visibility rules. If an old local `data/store.json` file exists, it is used as the seed source for the first database initialization.
+
+Startup migrations are applied automatically. Existing text-based order and revision timestamps are converted to PostgreSQL `TIMESTAMPTZ`, and order idempotency and lookup indexes are created. Back up the production database before deploying a version that introduces schema changes.
 
 ## API Environment
 
@@ -137,21 +153,39 @@ Optional environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `API_PORT` | `3001` | Express API port |
-| `JWT_SECRET` | `local-dev-secret-change-me` | JWT signing secret |
+| `JWT_SECRET` | `local-dev-secret-change-me` | JWT signing secret; production requires at least 32 characters |
 | `DATABASE_URL` | `postgresql://postgres:postgres@127.0.0.1:5432/ml_store` | PostgreSQL connection string |
 | `PG_POOL_MAX` | `10` | Maximum PostgreSQL pool connections |
+| `TRUST_PROXY_HOPS` | `0` | Number of trusted reverse-proxy hops for correct login rate limiting |
+| `INITIAL_ADMIN_LOGIN_ID` | `admin` | Initial production admin login ID when the database is empty |
+| `INITIAL_ADMIN_PASSWORD` | none | Required initial production admin password; minimum 12 characters |
+| `INITIAL_ADMIN_NAME` | `系統管理員` | Initial production admin display name |
+| `INITIAL_ADMIN_EMAIL` | empty | Initial production admin email |
 
-For production-like usage, set a strong `JWT_SECRET` and a dedicated PostgreSQL user/password.
+Production refuses to start with the development JWT secret or a secret shorter than 32 characters. An empty production database also requires `INITIAL_ADMIN_PASSWORD`; demo users and demo products are seeded only outside production. Use a dedicated PostgreSQL user/password and set `TRUST_PROXY_HOPS` when the app runs behind a reverse proxy.
 
 ## Main Scripts
 
 | Command | Description |
 | --- | --- |
 | `npm run dev` | Run API and Vite frontend together |
+| `npm run dev:all` | Start the bundled Windows PostgreSQL instance, then run API and frontend |
 | `npm run dev:api` | Run Express API with Node watch mode |
 | `npm run dev:web` | Run Vite frontend on `127.0.0.1` |
+| `npm test` | Run all server and frontend unit tests |
+| `npm run test:server` | Run server unit tests |
+| `npm run test:web` | Run frontend unit tests |
 | `npm run build` | Type-check and build frontend assets |
 | `npm run preview` | Preview the built frontend |
+| `npm audit` | Check runtime and development dependencies for known vulnerabilities |
+
+## Security Notes
+
+- Customer bootstrap responses contain only products visible to the signed-in customer and only that customer's effective prices and orders.
+- Login attempts are rate-limited. Configure `TRUST_PROXY_HOPS` correctly when a trusted reverse proxy is in front of the API.
+- Production requires a non-default `JWT_SECRET` and an initial administrator password of at least 12 characters for an empty database.
+- Order submission requires an idempotency key so retries cannot create duplicate orders.
+- Product inventory imports accept only `.xls` and `.xlsx` files up to 25 MB. The converter uses the current SheetJS distribution from the official SheetJS CDN.
 
 ## Current Scope
 

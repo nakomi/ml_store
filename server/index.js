@@ -2,6 +2,8 @@ import "dotenv/config";
 import bcrypt from "bcryptjs";
 import cors from "cors";
 import express from "express";
+import rateLimit from "express-rate-limit";
+import helmet from "helmet";
 import jwt from "jsonwebtoken";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +25,7 @@ import {
   now,
   patchProduct,
   publicUser,
+  readCustomerStore,
   readStore,
   reviseOrder,
   updateOrderStatus,
@@ -32,15 +35,31 @@ import {
   upsertUser,
   upsertVisibilityRule,
 } from "./db.js";
+import { buildCustomerCatalog, canCustomerSeeProduct, resolveProductPrice } from "./catalog.js";
 
 const app = express();
 const port = Number(process.env.API_PORT ?? 3001);
 const host = process.env.API_HOST ?? "0.0.0.0";
-const jwtSecret = process.env.JWT_SECRET ?? "local-dev-secret-change-me";
 const isProduction = process.env.NODE_ENV === "production";
+const defaultJwtSecret = "local-dev-secret-change-me";
+const jwtSecret = process.env.JWT_SECRET?.trim() || defaultJwtSecret;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, "..", "dist");
 
+if (isProduction && (jwtSecret === defaultJwtSecret || jwtSecret.length < 32)) {
+  throw new Error("Production requires JWT_SECRET with at least 32 characters.");
+}
+
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+if (Number.isInteger(trustProxyHops) && trustProxyHops > 0) app.set("trust proxy", trustProxyHops);
+
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+}));
 app.use(cors({
   origin(origin, callback) {
     if (!origin) return callback(null, true);
@@ -55,27 +74,18 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "5mb" }));
 
-function resolveProductPrice(productId, customer, prices) {
-  const active = prices.filter((price) => price.productId === productId && price.isActive);
-  return active.find((price) => price.scopeType === "customer" && price.scopeId === customer.id)?.price
-    ?? active.find((price) => price.scopeType === "customer_tier" && price.scopeId === customer.customerTierId)?.price
-    ?? active.find((price) => price.scopeType === "default" && price.scopeId === null)?.price
-    ?? null;
-}
-
-function hasRule(rules, productId, ruleType, scopeId) {
-  return rules.some((rule) => rule.productId === productId && rule.ruleType === ruleType && rule.scopeId === scopeId && rule.isActive);
-}
-
-function canCustomerSeeProduct(product, customer, rules) {
-  if (!product.isActive) return false;
-  if (hasRule(rules, product.id, "hidden_from_customer", customer.id)) return false;
-  if (hasRule(rules, product.id, "visible_to_customer", customer.id)) return true;
-  if (customer.customerTierId && hasRule(rules, product.id, "visible_to_customer_tier", customer.customerTierId)) return true;
-  return hasRule(rules, product.id, "visible_to_all", null);
-}
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { message: "登入失敗次數過多，請稍後再試。" },
+});
+const invalidPasswordHash = bcrypt.hashSync("invalid-login-password", 10);
 
 function validateQuantity(product, quantity) {
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) return "訂購數量必須是正整數。";
   if (quantity < product.moq) return `最小訂購量為 ${product.moq} ${product.salesUnit}`;
   if ((quantity - product.moq) % product.orderIncrement !== 0) return `訂購數量需以 ${product.orderIncrement} ${product.salesUnit} 為倍數`;
   return "";
@@ -85,7 +95,7 @@ async function requireAuth(req, res, next) {
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, "");
   if (!token) return res.status(401).json({ message: "請先登入。" });
   try {
-    const payload = jwt.verify(token, jwtSecret);
+    const payload = jwt.verify(token, jwtSecret, { algorithms: ["HS256"] });
     const user = await findActiveUserById(payload.sub);
     if (!user) return res.status(401).json({ message: "帳號不存在或已停用。" });
     req.user = user;
@@ -104,10 +114,11 @@ function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
-app.post("/api/auth/login", asyncRoute(async (req, res) => {
+app.post("/api/auth/login", loginLimiter, asyncRoute(async (req, res) => {
   const { loginId, password } = req.body ?? {};
   const user = await findActiveUserByLoginId(String(loginId ?? "").trim());
-  if (!user || !bcrypt.compareSync(String(password ?? ""), user.passwordHash)) {
+  const passwordMatches = await bcrypt.compare(String(password ?? ""), user?.passwordHash ?? invalidPasswordHash);
+  if (!user || !passwordMatches) {
     return res.status(401).json({ message: "登入 ID 或密碼錯誤。" });
   }
   const token = jwt.sign({ sub: user.id, role: user.role }, jwtSecret, { expiresIn: "8h" });
@@ -120,6 +131,7 @@ app.get("/api/me", requireAuth, (req, res) => {
 
 app.patch("/api/me", requireAuth, asyncRoute(async (req, res) => {
   const profile = req.body ?? {};
+  if (profile.password && String(profile.password).length < 12) return res.status(400).json({ message: "新密碼至少需要 12 個字元。" });
   const saved = await upsertUser({
     ...req.user,
     name: profile.name ?? req.user.name,
@@ -136,15 +148,26 @@ app.patch("/api/me", requireAuth, asyncRoute(async (req, res) => {
 }));
 
 app.get("/api/bootstrap", requireAuth, asyncRoute(async (req, res) => {
+  if (req.user.role === "customer") {
+    const store = await readCustomerStore(req.user.id);
+    const { products, prices } = buildCustomerCatalog(store, req.user);
+    return res.json({
+      customerTiers: [],
+      users: [publicUser(req.user)],
+      products,
+      prices,
+      visibilityRules: [],
+      orders: store.orders.filter((order) => order.customerId === req.user.id),
+    });
+  }
   const store = await readStore();
-  const orders = req.user.role === "admin" ? store.orders : store.orders.filter((order) => order.customerId === req.user.id);
   res.json({
     customerTiers: store.customerTiers,
-    users: req.user.role === "admin" ? store.users.map(publicUser) : [publicUser(req.user)],
+    users: store.users.map(publicUser),
     products: store.products,
     prices: store.prices,
     visibilityRules: store.visibilityRules,
-    orders,
+    orders: store.orders,
   });
 }));
 
@@ -154,6 +177,9 @@ app.post("/api/users", requireAuth, requireAdmin, asyncRoute(async (req, res) =>
   if (!user?.name || !user?.loginId || !["admin", "customer"].includes(user.role)) {
     return res.status(400).json({ message: "請填寫名稱、登入 ID 與角色。" });
   }
+  const existingUser = store.users.find((entry) => entry.id === user.id);
+  if (!existingUser && String(user.password ?? "").length < 12) return res.status(400).json({ message: "新帳號密碼至少需要 12 個字元。" });
+  if (existingUser && user.password && String(user.password).length < 12) return res.status(400).json({ message: "新密碼至少需要 12 個字元。" });
   const loginTaken = store.users.find((entry) => entry.loginId.toLowerCase() === String(user.loginId).toLowerCase() && entry.id !== user.id);
   if (loginTaken) return res.status(409).json({ message: "登入 ID 已被使用。" });
   const emailTaken = user.email && store.users.find((entry) => entry.email?.toLowerCase() === String(user.email).toLowerCase() && entry.id !== user.id);
@@ -243,6 +269,8 @@ app.post("/api/prices", requireAuth, requireAdmin, asyncRoute(async (req, res) =
   }
   if (price.scopeType !== "default" && !price.scopeId) return res.status(400).json({ message: "請選擇價格適用對象。" });
   if (!store.products.some((entry) => entry.id === price.productId)) return res.status(404).json({ message: "找不到商品。" });
+  if (price.scopeType === "customer_tier" && !store.customerTiers.some((entry) => entry.id === price.scopeId)) return res.status(404).json({ message: "找不到客戶等級。" });
+  if (price.scopeType === "customer" && !store.users.some((entry) => entry.id === price.scopeId && entry.role === "customer")) return res.status(404).json({ message: "找不到客戶帳號。" });
   await upsertPrice(price);
   const updated = await readStore();
   res.json({ prices: updated.prices });
@@ -255,6 +283,8 @@ app.post("/api/visibility-rules", requireAuth, requireAdmin, asyncRoute(async (r
   if (!rule?.productId || !ruleTypes.includes(rule.ruleType)) return res.status(400).json({ message: "請選擇商品與可見規則。" });
   if (rule.ruleType !== "visible_to_all" && !rule.scopeId) return res.status(400).json({ message: "請選擇規則適用對象。" });
   if (!store.products.some((entry) => entry.id === rule.productId)) return res.status(404).json({ message: "找不到商品。" });
+  if (rule.ruleType === "visible_to_customer_tier" && !store.customerTiers.some((entry) => entry.id === rule.scopeId)) return res.status(404).json({ message: "找不到客戶等級。" });
+  if (["visible_to_customer", "hidden_from_customer"].includes(rule.ruleType) && !store.users.some((entry) => entry.id === rule.scopeId && entry.role === "customer")) return res.status(404).json({ message: "找不到客戶帳號。" });
   await upsertVisibilityRule(rule);
   const updated = await readStore();
   res.json({ visibilityRules: updated.visibilityRules });
@@ -262,8 +292,10 @@ app.post("/api/visibility-rules", requireAuth, requireAdmin, asyncRoute(async (r
 
 app.post("/api/orders", requireAuth, asyncRoute(async (req, res) => {
   if (req.user.role !== "customer") return res.status(403).json({ message: "只有客戶可以送出訂單。" });
-  const store = await readStore();
+  const store = await readCustomerStore(req.user.id);
   const { items, selectedPaymentMethod, customerNote } = req.body ?? {};
+  const idempotencyKey = String(req.body?.idempotencyKey ?? "").trim();
+  if (idempotencyKey.length < 16 || idempotencyKey.length > 128) return res.status(400).json({ message: "訂單識別碼無效，請重新整理後再試。" });
   if (selectedPaymentMethod !== "credit_card") return res.status(400).json({ message: "目前只接受信用卡付款。" });
   req.user.allowedPaymentMethods = ["credit_card"];
   const requiredProfileFields = ["taxId", "companyName", "contactName", "shippingAddress", "shippingDetail"];
@@ -272,10 +304,15 @@ app.post("/api/orders", requireAuth, asyncRoute(async (req, res) => {
     return res.status(400).json({ message: "客戶資料尚未完整，請聯絡客服或管理員補齊統編、名稱、聯絡人與送貨資訊。" });
   }
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: "購物車沒有可送出的商品。" });
+  if (items.length > 500) return res.status(400).json({ message: "單張訂單最多包含 500 項商品。" });
+  if (String(customerNote ?? "").length > 2000) return res.status(400).json({ message: "客戶備註不可超過 2000 字。" });
   if (!req.user.allowedPaymentMethods.includes(selectedPaymentMethod)) return res.status(400).json({ message: "此帳號不允許使用該付款方式。" });
+  const productIds = items.map((item) => item?.productId);
+  if (new Set(productIds).size !== productIds.length) return res.status(400).json({ message: "訂單不可包含重複商品。" });
+  const productsById = new Map(store.products.map((product) => [product.id, product]));
   const orderItems = [];
   for (const item of items) {
-    const product = store.products.find((entry) => entry.id === item.productId);
+    const product = productsById.get(item?.productId);
     if (!product || !canCustomerSeeProduct(product, req.user, store.visibilityRules)) return res.status(400).json({ message: "商品不存在或不可見。" });
     const price = resolveProductPrice(product.id, req.user, store.prices);
     if (!product.isOrderable || price === null) return res.status(400).json({ message: `${product.name} 目前不可下單。` });
@@ -301,6 +338,7 @@ app.post("/api/orders", requireAuth, asyncRoute(async (req, res) => {
     id: makeId("order"),
     orderNo: await nextOrderNo(),
     customerId: req.user.id,
+    idempotencyKey,
     customerSnapshot: {
       taxId: req.user.taxId,
       companyName: req.user.companyName,
@@ -316,15 +354,16 @@ app.post("/api/orders", requireAuth, asyncRoute(async (req, res) => {
     adjustmentTotal: 0,
     freightTotal: 0,
     grandTotal: subtotal,
-    customerNote: customerNote ?? "",
+    customerNote: String(customerNote ?? "").trim(),
     adminNote: "",
     submittedAt: now(),
     revisions: [],
     paymentRecords: [],
   };
-  await createOrder(order);
-  const updated = await readStore();
-  res.status(201).json({ order, orders: updated.orders.filter((entry) => entry.customerId === req.user.id) });
+  const creation = await createOrder(order);
+  const updated = await readCustomerStore(req.user.id);
+  const savedOrder = updated.orders.find((entry) => entry.id === creation.orderId);
+  res.status(creation.created ? 201 : 200).json({ order: savedOrder, orders: updated.orders });
 }));
 
 app.post("/api/orders/:id/revise", requireAuth, requireAdmin, asyncRoute(async (req, res) => {
@@ -349,11 +388,12 @@ app.post("/api/orders/:id/status", requireAuth, requireAdmin, asyncRoute(async (
 }));
 
 app.post("/api/orders/:id/accept-revision", requireAuth, asyncRoute(async (req, res) => {
-  await acceptRevision(req.params.id, req.user.id);
-  const updated = await readStore();
-  const order = updated.orders.find((entry) => entry.id === req.params.id && entry.customerId === req.user.id);
-  if (!order) return res.status(404).json({ message: "找不到訂單。" });
-  res.json({ order, orders: updated.orders.filter((entry) => entry.customerId === req.user.id) });
+  if (req.user.role !== "customer") return res.status(403).json({ message: "只有客戶可以接受訂單修訂。" });
+  const accepted = await acceptRevision(req.params.id, req.user.id);
+  if (!accepted) return res.status(404).json({ message: "找不到可接受的訂單修訂。" });
+  const updated = await readCustomerStore(req.user.id);
+  const order = updated.orders.find((entry) => entry.id === req.params.id);
+  res.json({ order, orders: updated.orders });
 }));
 
 app.post("/api/orders/:id/mark-paid", requireAuth, requireAdmin, asyncRoute(async (req, res) => {

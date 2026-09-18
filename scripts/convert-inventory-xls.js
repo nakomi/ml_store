@@ -1,17 +1,46 @@
 import path from "node:path";
-import fs from "node:fs/promises";
-import XLSX from "xlsx";
+import * as fs from "node:fs";
+import * as XLSX from "xlsx";
+
+XLSX.set_fs(fs);
 
 const [, , inputPath, outputPathArg] = process.argv;
+const MAX_INPUT_BYTES = 25 * 1024 * 1024;
+const ALLOWED_EXTENSIONS = new Set([".xls", ".xlsx"]);
 
 if (!inputPath) {
   console.error("Usage: node scripts/convert-inventory-xls.js <inventory.xls> [output.json]");
   process.exit(1);
 }
 
-const workbook = XLSX.readFile(inputPath, { cellDates: false });
+const inputExtension = path.extname(inputPath).toLowerCase();
+if (!ALLOWED_EXTENSIONS.has(inputExtension)) {
+  console.error("輸入檔案必須是 .xls 或 .xlsx 格式。");
+  process.exit(1);
+}
+
+const inputStats = await fs.promises.stat(inputPath).catch(() => null);
+if (!inputStats?.isFile()) {
+  console.error(`找不到輸入檔案：${inputPath}`);
+  process.exit(1);
+}
+
+if (inputStats.size > MAX_INPUT_BYTES) {
+  console.error("輸入檔案不可超過 25 MB。");
+  process.exit(1);
+}
+
+const workbook = XLSX.readFile(inputPath, {
+  cellDates: false,
+  bookVBA: false,
+  WTF: true,
+});
 const sheetName = workbook.SheetNames[0];
 const sheet = workbook.Sheets[sheetName];
+if (!sheetName || !sheet) {
+  console.error("活頁簿中沒有可讀取的工作表。");
+  process.exit(1);
+}
 const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 const headerIndex = rows.findIndex((row) => row.some((cell) => String(cell).trim() === "貨品編號"));
 
@@ -90,5 +119,5 @@ const output = {
 };
 
 const outputPath = outputPathArg || inputPath.replace(/\.[^.]+$/, ".json");
-await fs.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
+await fs.promises.writeFile(outputPath, `${JSON.stringify(output, null, 2)}\n`, "utf8");
 console.log(`Converted ${products.length} products to ${outputPath}`);

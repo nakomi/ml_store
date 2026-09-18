@@ -22,138 +22,29 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import { apiRequest } from "./api";
+import { adminTitle, allCategory, customerProfileComplete, customerSnapshot, formatDateTime, methodText, money, paymentText, resolveProductPrice, roleText, statusText, validateQuantity } from "./domain";
+import { downloadExcelXml, downloadJson } from "./downloads";
 import "./styles.css";
+import type { Bootstrap, CartItem, CustomerTier, Order, OrderRevisionInput, OrderStatus, PaymentMethod, PriceScope, Product, ProductImportResult, ProductPrice, Role, User, VisibilityRule, VisibilityRuleType } from "./types";
 
-type Role = "admin" | "customer";
-type PriceScope = "default" | "customer_tier" | "customer";
-type VisibilityRuleType = "visible_to_all" | "visible_to_customer_tier" | "visible_to_customer" | "hidden_from_customer";
-type PaymentMethod = "monthly_billing" | "bank_transfer" | "credit_card";
-type PaymentStatus = "not_required" | "pending" | "monthly_billing" | "paid" | "failed" | "cancelled" | "refunded";
-type OrderStatus = "submitted" | "admin_reviewing" | "revised" | "customer_accepted_revision" | "confirmed" | "processing" | "shipped" | "completed" | "cancelled";
-
-type CustomerTier = { id: string; code: string; name: string; isActive: boolean };
-type User = {
-  id: string;
-  loginId: string;
-  name: string;
-  email: string;
-  role: Role;
-  customerTierId?: string;
-  allowedPaymentMethods: PaymentMethod[];
-  isActive: boolean;
-  taxId?: string;
-  companyName?: string;
-  contactName?: string;
-  shippingAddress?: string;
-  shippingDetail?: string;
-};
-type Product = { id: string; sku: string; name: string; brand: string; series: string; category: string; description: string; image: string; salesUnit: string; packSize: string; moq: number; orderIncrement: number; stockQuantity: number; isOrderable: boolean; isActive: boolean };
-type ProductPrice = { id: string; productId: string; scopeType: PriceScope; scopeId: string | null; price: number; currency: "TWD"; isActive: boolean };
-type VisibilityRule = { id: string; productId: string; ruleType: VisibilityRuleType; scopeId: string | null; isActive: boolean };
-type CartItem = { productId: string; quantity: number };
-type OrderItem = { id: string; productId: string; skuSnapshot: string; productNameSnapshot: string; brandSnapshot: string; salesUnitSnapshot: string; packSizeSnapshot: string; unitPriceSnapshot: number; quantity: number; subtotal: number };
-type OrderRevision = { id: string; revisedBy: string; previousTotal: number; newTotal: number; changeSummary: string; beforeSnapshot: OrderItem[]; afterSnapshot: OrderItem[]; customerAcceptanceRequired: boolean; customerAcceptedAt?: string; createdAt: string };
-type PaymentRecord = { id: string; method: PaymentMethod; provider: "manual" | "ecpay" | "newebpay" | "tappay"; amount: number; status: PaymentStatus; paidAt?: string };
-type CustomerSnapshot = { taxId: string; companyName: string; contactName: string; shippingAddress: string; shippingDetail: string };
-type Order = { id: string; orderNo: string; customerId: string; customerSnapshot?: CustomerSnapshot; orderStatus: OrderStatus; paymentStatus: PaymentStatus; selectedPaymentMethod: PaymentMethod; items: OrderItem[]; subtotal: number; adjustmentTotal: number; freightTotal: number; grandTotal: number; customerNote: string; adminNote: string; submittedAt: string; confirmedAt?: string; revisions: OrderRevision[]; paymentRecords: PaymentRecord[] };
-type OrderRevisionInput = { items: Pick<OrderItem, "id" | "productId" | "quantity" | "unitPriceSnapshot">[]; adjustmentTotal: number; freightTotal: number; adminNote: string; changeSummary: string };
-type Bootstrap = { customerTiers: CustomerTier[]; users: User[]; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[]; orders: Order[] };
-type ProductImportResult = { importedProducts: number; importedPrices: number; importedVisibilityRules: number; createdTiers: number; skippedPrices: { sku: string; scopeName: string; price: number }[]; errors: string[] };
-
-const cartStorageKey = "b2b-store-cart";
+const legacyCartStorageKey = "b2b-store-cart";
+const cartStorageKey = (userId: string) => `b2b-store-cart:${userId}`;
 const loginNotice = "請登入後開始使用。";
-const allCategory = "所有產品";
-const methodText: Record<PaymentMethod, string> = { monthly_billing: "月結", bank_transfer: "銀行轉帳", credit_card: "信用卡" };
-const roleText: Record<Role, string> = { admin: "管理員", customer: "客戶" };
-const statusText: Record<OrderStatus, string> = {
-  submitted: "已送出",
-  admin_reviewing: "管理員審核中",
-  revised: "訂單已修訂",
-  customer_accepted_revision: "客戶已接受修訂",
-  confirmed: "已確認",
-  processing: "處理中",
-  shipped: "已出貨",
-  completed: "已完成",
-  cancelled: "已取消",
-};
-const paymentText: Record<PaymentStatus, string> = {
-  not_required: "不需付款",
-  pending: "待付款",
-  monthly_billing: "月結",
-  paid: "已付款",
-  failed: "付款失敗",
-  cancelled: "已取消",
-  refunded: "已退款",
-};
 
-function adminTitle(tab: "orders" | "products" | "users" | "tiers") {
-  const titles = {
-    orders: "訂單審核",
-    products: "商品規則",
-    users: "帳號管理",
-    tiers: "客戶等級",
-  };
-  return titles[tab];
-}
-
-function loadStoredCart(): CartItem[] {
+function loadStoredCart(userId: string): { items: CartItem[]; idempotencyKey: string | null } {
   try {
-    const parsed = JSON.parse(localStorage.getItem(cartStorageKey) ?? "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed
+    const raw = localStorage.getItem(cartStorageKey(userId)) ?? localStorage.getItem(legacyCartStorageKey) ?? "[]";
+    const parsed = JSON.parse(raw);
+    const rawItems = Array.isArray(parsed) ? parsed : parsed?.items;
+    const items = Array.isArray(rawItems) ? rawItems
       .filter((item) => typeof item?.productId === "string" && Number.isFinite(Number(item?.quantity)))
-      .map((item) => ({ productId: item.productId, quantity: Number(item.quantity) }));
+      .map((item) => ({ productId: item.productId, quantity: Number(item.quantity) })) : [];
+    const idempotencyKey = !Array.isArray(parsed) && typeof parsed?.idempotencyKey === "string" ? parsed.idempotencyKey : null;
+    return { items, idempotencyKey };
   } catch {
-    return [];
+    return { items: [], idempotencyKey: null };
   }
-}
-
-function money(value: number) {
-  return new Intl.NumberFormat("zh-TW", { style: "currency", currency: "TWD", maximumFractionDigits: 0 }).format(value);
-}
-
-function resolveProductPrice(productId: string, customer: User, prices: ProductPrice[]) {
-  const active = prices.filter((price) => price.productId === productId && price.isActive);
-  return active.find((price) => price.scopeType === "customer" && price.scopeId === customer.id)?.price
-    ?? active.find((price) => price.scopeType === "customer_tier" && price.scopeId === customer.customerTierId)?.price
-    ?? active.find((price) => price.scopeType === "default" && price.scopeId === null)?.price
-    ?? null;
-}
-
-function hasRule(rules: VisibilityRule[], productId: string, ruleType: VisibilityRuleType, scopeId: string | null) {
-  return rules.some((rule) => rule.productId === productId && rule.ruleType === ruleType && rule.scopeId === scopeId && rule.isActive);
-}
-
-function canCustomerSeeProduct(product: Product, customer: User, rules: VisibilityRule[]) {
-  if (!product.isActive) return false;
-  if (hasRule(rules, product.id, "hidden_from_customer", customer.id)) return false;
-  if (hasRule(rules, product.id, "visible_to_customer", customer.id)) return true;
-  if (customer.customerTierId && hasRule(rules, product.id, "visible_to_customer_tier", customer.customerTierId)) return true;
-  return hasRule(rules, product.id, "visible_to_all", null);
-}
-
-function validateQuantity(product: Product, quantity: number) {
-  if (quantity < product.moq) return `最低訂購量為 ${product.moq} ${product.salesUnit}`;
-  if ((quantity - product.moq) % product.orderIncrement !== 0) return `訂購數量需符合 ${product.orderIncrement} ${product.salesUnit} 的倍數`;
-  return "";
-}
-
-function customerProfileComplete(customer: User) {
-  return Boolean(customer.taxId && customer.companyName && customer.contactName && customer.shippingAddress && customer.shippingDetail);
-}
-
-function customerSnapshot(customer: User): CustomerSnapshot {
-  return {
-    taxId: customer.taxId ?? "",
-    companyName: customer.companyName ?? "",
-    contactName: customer.contactName ?? "",
-    shippingAddress: customer.shippingAddress ?? "",
-    shippingDetail: customer.shippingDetail ?? "",
-  };
-}
-
-function xmlEscape(value: string | number | undefined) {
-  return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function ProductImage(props: { product: Product; className?: string }) {
@@ -170,45 +61,6 @@ function ProductImage(props: { product: Product; className?: string }) {
   return <img className={props.className} src={image} alt={props.product.name} onError={() => setFailed(true)} />;
 }
 
-function downloadExcelXml(fileName: string, sheets: { name: string; rows: Record<string, string | number | undefined>[] }[]) {
-  const sheetXml = (name: string, rows: Record<string, string | number | undefined>[]) => {
-    const headers = rows[0] ? Object.keys(rows[0]) : [];
-    const headerRow = `<Row>${headers.map((header) => `<Cell><Data ss:Type="String">${xmlEscape(header)}</Data></Cell>`).join("")}</Row>`;
-    const bodyRows = rows.map((row) => `<Row>${headers.map((header) => `<Cell><Data ss:Type="${typeof row[header] === "number" ? "Number" : "String"}">${xmlEscape(row[header])}</Data></Cell>`).join("")}</Row>`).join("");
-    return `<Worksheet ss:Name="${xmlEscape(name)}"><Table>${headerRow}${bodyRows}</Table></Worksheet>`;
-  };
-  const workbook = `<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">${sheets.map((sheet) => sheetXml(sheet.name, sheet.rows)).join("")}</Workbook>`;
-  const url = URL.createObjectURL(new Blob([workbook], { type: "application/vnd.ms-excel;charset=utf-8" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-function downloadJson(fileName: string, data: unknown) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-async function apiRequest<T>(path: string, token: string | null, options: RequestInit = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers ?? {}),
-    },
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message ?? "系統發生錯誤。");
-  return data as T;
-}
-
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem("b2b-token"));
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -218,12 +70,14 @@ function App() {
   const [notice, setNotice] = useState(loginNotice);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState(allCategory);
-  const [cart, setCart] = useState<CartItem[]>(loadStoredCart);
+  const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod>("credit_card");
   const [customerNote, setCustomerNote] = useState("");
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [checkoutStep, setCheckoutStep] = useState<"cart" | "confirm" | "thankyou">("cart");
   const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [checkoutIdempotencyKey, setCheckoutIdempotencyKey] = useState<string | null>(null);
   const [submittedOrder, setSubmittedOrder] = useState<Order | null>(null);
   const [catalogView, setCatalogView] = useState<"grid" | "list">("grid");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -238,7 +92,10 @@ function App() {
     if (!token) return;
     apiRequest<{ user: User }>("/api/me", token)
       .then(({ user }) => {
+        const storedCart = loadStoredCart(user.id);
         setCurrentUser(user);
+        setCart(storedCart.items);
+        setCheckoutIdempotencyKey(storedCart.idempotencyKey);
         setView(user.role === "admin" ? "admin" : "customer");
         setSelectedPaymentMethod("credit_card");
         setNotice(`${user.name} 已登入。`);
@@ -247,13 +104,19 @@ function App() {
       .catch(() => {
         localStorage.removeItem("b2b-token");
         setToken(null);
+        setCurrentUser(null);
+        setData(null);
+        setCart([]);
+        setCheckoutIdempotencyKey(null);
         setNotice(loginNotice);
       });
   }, [token]);
 
   useEffect(() => {
-    localStorage.setItem(cartStorageKey, JSON.stringify(cart));
-  }, [cart]);
+    if (!currentUser || currentUser.role !== "customer") return;
+    localStorage.setItem(cartStorageKey(currentUser.id), JSON.stringify({ items: cart, idempotencyKey: checkoutIdempotencyKey }));
+    localStorage.removeItem(legacyCartStorageKey);
+  }, [cart, checkoutIdempotencyKey, currentUser]);
 
   async function login(loginId: string, password: string) {
     const result = await apiRequest<{ token: string; user: User }>("/api/auth/login", null, {
@@ -261,6 +124,9 @@ function App() {
       body: JSON.stringify({ loginId, password }),
     });
     localStorage.setItem("b2b-token", result.token);
+    const storedCart = loadStoredCart(result.user.id);
+    setCart(storedCart.items);
+    setCheckoutIdempotencyKey(storedCart.idempotencyKey);
     setToken(result.token);
     setCurrentUser(result.user);
     setNotice(`${result.user.name} 已登入。`);
@@ -268,10 +134,13 @@ function App() {
 
   function logout() {
     localStorage.removeItem("b2b-token");
+    if (currentUser) localStorage.removeItem(cartStorageKey(currentUser.id));
+    localStorage.removeItem(legacyCartStorageKey);
     setToken(null);
     setCurrentUser(null);
     setData(null);
     setCart([]);
+    setCheckoutIdempotencyKey(null);
     setNotice("已登出。");
   }
 
@@ -281,8 +150,9 @@ function App() {
   const appData = data;
   const currentNotice = notice === loginNotice ? `${currentUser.name} 已登入。` : notice;
   const customer = currentUser.role === "customer" ? currentUser : appData.users.find((user) => user.role === "customer") ?? currentUser;
-  const catalogProducts = appData.products
-    .filter((product) => currentUser.role === "admin" || canCustomerSeeProduct(product, customer, appData.visibilityRules));
+  const catalogProducts = currentUser.role === "admin"
+    ? appData.products
+    : appData.products.filter((product) => product.isActive);
   const categories = [allCategory, ...Array.from(new Set(catalogProducts.map((product) => product.category.trim()).filter(Boolean)))];
   const visibleProducts = catalogProducts
     .filter((product) => category === allCategory || product.category.trim() === category)
@@ -304,6 +174,7 @@ function App() {
       setNotice(`${product.name} 目前不可加入購物車。`);
       return;
     }
+    setCheckoutIdempotencyKey(null);
     setCart((items) => {
       const existing = items.find((item) => item.productId === product.id);
       if (existing) return items.map((item) => item.productId === product.id ? { ...item, quantity: item.quantity + product.orderIncrement } : item);
@@ -318,7 +189,18 @@ function App() {
     const product = appData.products.find((entry) => entry.id === productId)!;
     const error = validateQuantity(product, quantity);
     if (error) setNotice(error);
+    setCheckoutIdempotencyKey(null);
     setCart((items) => items.map((item) => item.productId === productId ? { ...item, quantity } : item));
+  }
+
+  function removeFromCart(productId: string) {
+    setCheckoutIdempotencyKey(null);
+    setCart((items) => items.filter((item) => item.productId !== productId));
+  }
+
+  function updateCustomerNote(value: string) {
+    setCheckoutIdempotencyKey(null);
+    setCustomerNote(value);
   }
 
   function goToConfirm() {
@@ -326,24 +208,36 @@ function App() {
     if (cartRows.length === 0) return setNotice("購物車沒有可送出的商品。");
     if (invalid) return setNotice(validateQuantity(invalid.product, invalid.quantity));
     if (!customerProfileComplete(customer)) return setNotice("客戶資料尚未完整，請聯絡客服或管理員補齊統編、名稱、聯絡人與送貨資訊。");
+    if (!checkoutIdempotencyKey) setCheckoutIdempotencyKey(crypto.randomUUID());
     setAgreedToTerms(false);
     setCheckoutStep("confirm");
   }
 
   async function submitOrder() {
     if (!agreedToTerms) return setNotice("請先勾選同意訂購條款。");
-    const result = await apiRequest<{ order: Order; orders: Order[] }>("/api/orders", token, {
-      method: "POST",
-      body: JSON.stringify({ items: cart, selectedPaymentMethod: "credit_card", customerNote }),
-    });
-    setData((prev) => prev ? { ...prev, orders: result.orders } : prev);
-    setSubmittedOrder(result.order);
-    setCart([]);
-    setCustomerNote("");
-    setAgreedToTerms(false);
-    setCheckoutStep("thankyou");
-    setCartOpen(false);
-    setNotice("訂單已送出，等待管理員確認。");
+    if (isSubmittingOrder) return;
+    const idempotencyKey = checkoutIdempotencyKey ?? crypto.randomUUID();
+    if (!checkoutIdempotencyKey) setCheckoutIdempotencyKey(idempotencyKey);
+    setIsSubmittingOrder(true);
+    try {
+      const result = await apiRequest<{ order: Order; orders: Order[] }>("/api/orders", token, {
+        method: "POST",
+        body: JSON.stringify({ items: cart, selectedPaymentMethod: "credit_card", customerNote, idempotencyKey }),
+      });
+      setData((prev) => prev ? { ...prev, orders: result.orders } : prev);
+      setSubmittedOrder(result.order);
+      setCart([]);
+      setCheckoutIdempotencyKey(null);
+      setCustomerNote("");
+      setAgreedToTerms(false);
+      setCheckoutStep("thankyou");
+      setCartOpen(false);
+      setNotice("訂單已送出，等待管理員確認。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "訂單送出失敗，請稍後再試。");
+    } finally {
+      setIsSubmittingOrder(false);
+    }
   }
 
   async function saveSelfProfile(profile: User & { password?: string }) {
@@ -393,6 +287,7 @@ function App() {
   async function clearProductTestData() {
     const result = await apiRequest<{ result: { deletedProducts: number; deletedPrices: number; deletedVisibilityRules: number }; products: Product[]; prices: ProductPrice[]; visibilityRules: VisibilityRule[] }>("/api/products/test-data", token, { method: "DELETE" });
     setData((prev) => prev ? { ...prev, products: result.products, prices: result.prices, visibilityRules: result.visibilityRules } : prev);
+    setCheckoutIdempotencyKey(null);
     setCart([]);
     setNotice(`已清空產品測試資料：${result.result.deletedProducts} 筆產品、${result.result.deletedPrices} 筆價格、${result.result.deletedVisibilityRules} 筆可見性規則。`);
   }
@@ -580,14 +475,15 @@ function App() {
             openDetail={setSelectedProduct}
             cartRows={cartRows}
             updateCart={updateCart}
-            setCart={setCart}
+            removeFromCart={removeFromCart}
             cartTotal={cartTotal}
             selectedPaymentMethod={selectedPaymentMethod}
             setSelectedPaymentMethod={setSelectedPaymentMethod}
             customerNote={customerNote}
-            setCustomerNote={setCustomerNote}
+            setCustomerNote={updateCustomerNote}
             goToConfirm={goToConfirm}
             submitOrder={submitOrder}
+            isSubmittingOrder={isSubmittingOrder}
             checkoutStep={checkoutStep}
             setCheckoutStep={setCheckoutStep}
             agreedToTerms={agreedToTerms}
@@ -630,34 +526,6 @@ function App() {
       </main>
       {selectedProduct ? <CleanProductDetailModal product={selectedProduct} customer={customer} prices={appData.prices} addToCart={(product) => { addToCart(product); setSelectedProduct(null); }} close={() => setSelectedProduct(null)} canOrder={currentUser.role === "customer"} /> : null}
     </div>
-  );
-}
-
-function LoginScreen(props: { login: (loginId: string, password: string) => Promise<void>; notice: string }) {
-  const [loginId, setLoginId] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setError("");
-    try {
-      await props.login(loginId, password);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "登入失敗。");
-    }
-  }
-  return (
-    <main className="loginPage">
-      <form className="loginPanel" onSubmit={submit}>
-        <Package size={34} />
-        <h1>工廠 B2B 訂購入口</h1>
-        <p>請使用管理員或客戶帳號登入。</p>
-        <label>登入 ID<input value={loginId} onChange={(event) => setLoginId(event.target.value)} /></label>
-        <label>密碼<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-        <button className="primaryAction" type="submit"><LogIn size={18} /> 登入</button>
-        {error ? <p className="formError">{error}</p> : <p className="empty">{props.notice}</p>}
-      </form>
-    </main>
   );
 }
 
@@ -718,7 +586,7 @@ function CartCustomerSummary(props: { customer: User }) {
 
 function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: (user: User & { password?: string }) => void | Promise<void> }) {
   const [editing, setEditing] = useState<User & { password?: string }>({ ...props.user, password: "" });
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   useEffect(() => {
     setEditing({ ...props.user, password: "" });
@@ -727,8 +595,12 @@ function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: 
   async function save() {
     if (!editing.name.trim()) return;
     setSaveState("saving");
-    await props.saveProfile(editing);
-    setSaveState("saved");
+    try {
+      await props.saveProfile(editing);
+      setSaveState("saved");
+    } catch {
+      setSaveState("error");
+    }
     window.setTimeout(() => setSaveState("idle"), 1800);
   }
 
@@ -740,7 +612,7 @@ function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: 
           <label>登入 ID<input value={editing.loginId} disabled /></label>
           <label>名稱<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} /></label>
           <label>Email<input value={editing.email} onChange={(event) => setEditing({ ...editing, email: event.target.value })} /></label>
-          <label>新密碼<input type="password" value={editing.password ?? ""} onChange={(event) => setEditing({ ...editing, password: event.target.value })} placeholder="不變更請留空" /></label>
+          <label>新密碼<input type="password" minLength={12} value={editing.password ?? ""} onChange={(event) => setEditing({ ...editing, password: event.target.value })} placeholder="不變更請留空，至少 12 字元" /></label>
           {editing.role === "customer" ? <>
             <label>統編<input value={editing.taxId ?? ""} onChange={(event) => setEditing({ ...editing, taxId: event.target.value })} /></label>
             <label>公司名稱<input value={editing.companyName ?? ""} onChange={(event) => setEditing({ ...editing, companyName: event.target.value })} /></label>
@@ -750,7 +622,7 @@ function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: 
             <div className="paymentNotice"><strong>付款方式</strong><span>信用卡</span><small>付款串接尚未啟用，訂單會先送出等待後續處理。</small></div>
           </> : null}
         </div>
-        <button className="primaryAction" disabled={saveState === "saving"} onClick={save}><Save size={18} /> {saveState === "saving" ? "儲存中..." : saveState === "saved" ? "已儲存" : "儲存帳號資料"}</button>
+        <button className="primaryAction" disabled={saveState === "saving"} onClick={save}><Save size={18} /> {saveState === "saving" ? "儲存中..." : saveState === "saved" ? "已儲存" : saveState === "error" ? "儲存失敗，請重試" : "儲存帳號資料"}</button>
       </section>
       <section>
         <div className="sectionHeader"><div><h2>過去訂單</h2><p>查看此帳號送出的訂單紀錄。</p></div></div>
@@ -758,7 +630,7 @@ function CustomerAccountPage(props: { user: User; orders: Order[]; saveProfile: 
           <div className="orderHistoryList">
             {props.orders.map((order) => (
               <div className="orderHistoryItem" key={order.id}>
-                <div><strong>{order.orderNo}</strong><span>{order.submittedAt}</span></div>
+                <div><strong>{order.orderNo}</strong><span>{formatDateTime(order.submittedAt)}</span></div>
                 <span>{statusText[order.orderStatus]}</span>
                 <span>{paymentText[order.paymentStatus]}</span>
                 <strong>{money(order.grandTotal)}</strong>
@@ -798,7 +670,7 @@ function CustomerPortal(props: {
   openDetail: (product: Product) => void;
   cartRows: { product: Product; quantity: number; price: number; subtotal: number }[];
   updateCart: (productId: string, quantity: number) => void;
-  setCart: React.Dispatch<React.SetStateAction<CartItem[]>>;
+  removeFromCart: (productId: string) => void;
   cartTotal: number;
   selectedPaymentMethod: PaymentMethod;
   setSelectedPaymentMethod: (value: PaymentMethod) => void;
@@ -806,6 +678,7 @@ function CustomerPortal(props: {
   setCustomerNote: (value: string) => void;
   goToConfirm: () => void;
   submitOrder: () => void;
+  isSubmittingOrder: boolean;
   checkoutStep: "cart" | "confirm" | "thankyou";
   setCheckoutStep: (step: "cart" | "confirm" | "thankyou") => void;
   agreedToTerms: boolean;
@@ -903,52 +776,6 @@ function CleanProductList(props: Parameters<typeof CustomerPortal>[0]) {
   );
 }
 
-function ProductGrid(props: Parameters<typeof CustomerPortal>[0]) {
-  return (
-    <div className="productGrid">
-      {props.products.map((product) => {
-        const price = resolveProductPrice(product.id, props.customer, props.prices);
-        const canAdd = props.canOrder && product.isOrderable && price !== null;
-        return (
-          <article className="productCard" key={product.id}>
-            <button className="imageButton" onClick={() => props.openDetail(product)} aria-label={`查看 ${product.name}`}><ProductImage product={product} /></button>
-            <div className="productBody">
-              <div className="sku">{product.sku}</div><h3>{product.name}</h3><p>{product.description}</p>
-              <div className="meta"><span>{product.brand}</span><span>{product.series}</span><span>MOQ {product.moq} {product.salesUnit}</span></div>
-              <div className="cardFooter">
-                <strong>{price === null ? "請洽業務" : money(price)}</strong>
-                <div className="inlineActions"><button onClick={() => props.openDetail(product)}><Eye size={17} /> 詳情</button><button disabled={!canAdd} onClick={() => props.addToCart(product)}><ShoppingCart size={17} /> {canAdd ? "加入購物車" : "請洽業務"}</button></div>
-              </div>
-            </div>
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function ProductList(props: Parameters<typeof CustomerPortal>[0]) {
-  return (
-    <div className="productList">
-      <div className="productListHead"><span>SKU</span><span>商品</span><span>規格</span><span>MOQ</span><span>價格</span><span>操作</span></div>
-      {props.products.map((product) => {
-        const price = resolveProductPrice(product.id, props.customer, props.prices);
-        const canAdd = props.canOrder && product.isOrderable && price !== null;
-        return (
-          <div className="productListRow" key={product.id}>
-            <strong>{product.sku}</strong>
-            <div><span>{product.name}</span><small>{product.brand} · {product.series}</small></div>
-            <span>{product.packSize}</span>
-            <span>{product.moq} {product.salesUnit}</span>
-            <strong>{price === null ? "請洽業務" : money(price)}</strong>
-            <div className="rowActions"><button onClick={() => props.openDetail(product)}>詳情</button><button disabled={!canAdd} onClick={() => props.addToCart(product)}>{canAdd ? "加入購物車" : "請洽業務"}</button></div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 function CleanCartPanel(props: Parameters<typeof CustomerPortal>[0]) {
   return (
     <section className="cartPanel">
@@ -975,7 +802,7 @@ function CleanCartPanel(props: Parameters<typeof CustomerPortal>[0]) {
                 </div>
               </div>
               <strong className="cartItemSubtotal">{money(row.subtotal)}</strong>
-              <button className="cartRemove" onClick={() => props.setCart((items) => items.filter((item) => item.productId !== row.product.id))} aria-label="刪除" title="刪除"><Trash2 size={17} /></button>
+              <button className="cartRemove" onClick={() => props.removeFromCart(row.product.id)} aria-label="刪除" title="刪除"><Trash2 size={17} /></button>
             </div>
           );
         })}
@@ -986,26 +813,6 @@ function CleanCartPanel(props: Parameters<typeof CustomerPortal>[0]) {
         <label>客戶備註<textarea disabled={!props.canOrder} value={props.customerNote} onChange={(event) => props.setCustomerNote(event.target.value)} placeholder="出貨、對帳或其他備註" /></label>
         <button className="checkoutAction" disabled={!props.canOrder || props.cartRows.length === 0} onClick={props.goToConfirm}>結帳</button>
       </div>
-    </section>
-  );
-}
-
-function CartPanel(props: Parameters<typeof CustomerPortal>[0]) {
-  return (
-    <section>
-      <h2>購物車</h2>
-      <CustomerInfo customer={props.customer} />
-      {!props.canOrder ? <p className="empty">管理員預覽客戶型錄時不能送出訂單。</p> : props.cartRows.length === 0 ? <p className="empty">尚未加入商品。</p> : props.cartRows.map((row) => (
-        <div className="cartLine" key={row.product.id}>
-          <div><strong>{row.product.name}</strong><span>{row.product.sku}</span></div>
-          <input type="number" min={row.product.moq} step={row.product.orderIncrement} value={row.quantity} onChange={(event) => props.updateCart(row.product.id, Number(event.target.value))} />
-          <b>{money(row.subtotal)}</b><button className="iconButton" onClick={() => props.setCart((items) => items.filter((item) => item.productId !== row.product.id))} aria-label="刪除" title="刪除"><Trash2 size={16} /></button>
-        </div>
-      ))}
-      <div className="totalRow"><span>總計</span><strong>{money(props.cartTotal)}</strong></div>
-      <div className="paymentNotice"><strong>付款方式</strong><span>信用卡</span><small>付款功能尚未串接，訂單會先送出等待後續處理。</small></div>
-      <label>客戶備註<textarea disabled={!props.canOrder} value={props.customerNote} onChange={(event) => props.setCustomerNote(event.target.value)} placeholder="出貨、對帳或其他備註" /></label>
-      <button className="primaryAction" disabled={!props.canOrder || props.cartRows.length === 0} onClick={props.goToConfirm}><LogIn size={18} /> 前往確認</button>
     </section>
   );
 }
@@ -1024,7 +831,7 @@ function ConfirmPanel(props: Parameters<typeof CustomerPortal>[0]) {
         <p>送出訂單後，訂單仍需由管理員確認。若管理員修改數量、價格或總額，客戶需再次接受修訂後才會進入後續付款或出貨流程。</p>
         <label className="switchLabel"><input type="checkbox" checked={props.agreedToTerms} onChange={(event) => props.setAgreedToTerms(event.target.checked)} />我已確認訂單內容、客戶資料與送貨資訊，並同意訂購條款。</label>
       </div>
-      <div className="rowActions"><button onClick={() => props.setCheckoutStep("cart")}>返回購物車</button><button className="primaryAction" disabled={!props.agreedToTerms} onClick={props.submitOrder}>確認送出</button></div>
+      <div className="rowActions"><button disabled={props.isSubmittingOrder} onClick={() => props.setCheckoutStep("cart")}>返回購物車</button><button className="primaryAction" disabled={!props.agreedToTerms || props.isSubmittingOrder} onClick={props.submitOrder}>{props.isSubmittingOrder ? "送出中..." : "確認送出"}</button></div>
     </section>
   );
 }
@@ -1078,31 +885,12 @@ function CleanProductDetailModal(props: { product: Product; customer: User; pric
   );
 }
 
-function ProductDetailModal(props: { product: Product; customer: User; prices: ProductPrice[]; addToCart: (product: Product) => void; close: () => void; canOrder: boolean }) {
-  const price = resolveProductPrice(props.product.id, props.customer, props.prices);
-  const canAdd = props.canOrder && props.product.isOrderable && price !== null;
-  return (
-    <div className="modalBackdrop" role="dialog" aria-modal="true">
-      <div className="detailModal">
-        <button className="modalClose" onClick={props.close}>關閉</button><ProductImage product={props.product} />
-        <div className="detailContent">
-          <div className="sku">{props.product.sku}</div><h2>{props.product.name}</h2><p>{props.product.description}</p>
-          <dl className="detailList">
-            <div><dt>品牌</dt><dd>{props.product.brand}</dd></div><div><dt>系列</dt><dd>{props.product.series}</dd></div><div><dt>分類</dt><dd>{props.product.category}</dd></div><div><dt>銷售單位</dt><dd>{props.product.salesUnit}</dd></div><div><dt>包裝規格</dt><dd>{props.product.packSize}</dd></div><div><dt>MOQ</dt><dd>{props.product.moq} {props.product.salesUnit}</dd></div><div><dt>訂購倍數</dt><dd>{props.product.orderIncrement} {props.product.salesUnit}</dd></div><div><dt>價格</dt><dd>{price === null ? "請洽業務" : money(price)}</dd></div>
-          </dl>
-          <button className="primaryAction" disabled={!canAdd} onClick={() => props.addToCart(props.product)}><ShoppingCart size={18} /> {canAdd ? "加入購物車" : "請洽業務"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function AdminPortal(props: {
   currentUserId: string;
   users: User[];
   tiers: CustomerTier[];
   adminTab: "orders" | "products" | "users" | "tiers";
-  saveUser: (user: User & { password?: string }) => void;
+  saveUser: (user: User & { password?: string }) => Promise<void>;
   deleteUser: (user: User) => Promise<void>;
   saveTier: (tier: CustomerTier & { description?: string }) => void;
   deleteTier: (tier: CustomerTier) => void;
@@ -1116,9 +904,9 @@ function AdminPortal(props: {
   rules: VisibilityRule[];
   orders: Order[];
   toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
-  reviseOrder: (orderId: string, revision: OrderRevisionInput) => void;
-  updateOrderStatus: (orderId: string, orderStatus: OrderStatus, adminNote: string) => void;
-  markPaid: (orderId: string) => void;
+  reviseOrder: (orderId: string, revision: OrderRevisionInput) => Promise<void>;
+  updateOrderStatus: (orderId: string, orderStatus: OrderStatus, adminNote: string) => Promise<void>;
+  markPaid: (orderId: string) => Promise<void>;
   exportOrders: () => void;
   exportProductsJson: () => void;
   importProductsJson: (file: File) => Promise<void>;
@@ -1130,195 +918,6 @@ function AdminPortal(props: {
       {props.adminTab === "users" ? <UserManager users={props.users} tiers={props.tiers} currentUserId={props.currentUserId} saveUser={props.saveUser} deleteUser={props.deleteUser} /> : null}
       {props.adminTab === "tiers" ? <TierManager tiers={props.tiers} saveTier={props.saveTier} deleteTier={props.deleteTier} /> : null}
     </div>
-  );
-}
-
-function ProductSettingsManager(props: {
-  products: Product[];
-  prices: ProductPrice[];
-  rules: VisibilityRule[];
-  users: User[];
-  tiers: CustomerTier[];
-  saveProduct: (product: Product) => void;
-  savePrice: (price: ProductPrice) => void;
-  saveVisibilityRule: (rule: VisibilityRule) => void;
-  toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
-  exportProductsJson: () => void;
-  importProductsJson: (file: File) => Promise<void>;
-}) {
-  const customers = props.users.filter((user) => user.role === "customer");
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [isImporting, setIsImporting] = useState(false);
-  const newProduct = (): Product => ({
-    id: `product-${Date.now()}`,
-    sku: "",
-    name: "",
-    brand: "",
-    series: "",
-    category: "",
-    description: "",
-    image: "",
-    salesUnit: "件",
-    packSize: "",
-    moq: 1,
-    orderIncrement: 1,
-    stockQuantity: 0,
-    isOrderable: true,
-    isActive: true,
-  });
-  const newPrice = (): ProductPrice => ({
-    id: "",
-    productId: props.products[0]?.id ?? "",
-    scopeType: "default",
-    scopeId: null,
-    price: 0,
-    currency: "TWD",
-    isActive: true,
-  });
-  const newRule = (): VisibilityRule => ({
-    id: "",
-    productId: props.products[0]?.id ?? "",
-    ruleType: "visible_to_all",
-    scopeId: null,
-    isActive: true,
-  });
-  const [productForm, setProductForm] = useState<Product>(newProduct);
-  const [priceForm, setPriceForm] = useState<ProductPrice>(newPrice);
-  const [ruleForm, setRuleForm] = useState<VisibilityRule>(newRule);
-  const productName = (productId: string) => props.products.find((product) => product.id === productId)?.name ?? productId;
-  const targetName = (type: PriceScope | VisibilityRuleType, scopeId: string | null) => {
-    if (!scopeId) return "全部客戶";
-    if (type === "customer_tier" || type === "visible_to_customer_tier") return props.tiers.find((tier) => tier.id === scopeId)?.name ?? scopeId;
-    return customers.find((user) => user.id === scopeId)?.name ?? scopeId;
-  };
-  const priceScopeText: Record<PriceScope, string> = { default: "預設價格", customer_tier: "客戶等級價格", customer: "指定客戶價格" };
-  const ruleText: Record<VisibilityRuleType, string> = { visible_to_all: "全部客戶可見", visible_to_customer_tier: "指定客戶等級可見", visible_to_customer: "指定客戶可見", hidden_from_customer: "指定客戶隱藏" };
-  const setPriceScope = (scopeType: PriceScope) => setPriceForm({ ...priceForm, scopeType, scopeId: scopeType === "default" ? null : scopeType === "customer_tier" ? props.tiers[0]?.id ?? null : customers[0]?.id ?? null });
-  const setRuleType = (ruleType: VisibilityRuleType) => setRuleForm({ ...ruleForm, ruleType, scopeId: ruleType === "visible_to_all" ? null : ruleType === "visible_to_customer_tier" ? props.tiers[0]?.id ?? null : customers[0]?.id ?? null });
-  const saveProduct = () => {
-    if (!productForm.sku.trim() || !productForm.name.trim()) return;
-    props.saveProduct(productForm);
-    setProductForm(newProduct());
-  };
-  const savePrice = () => {
-    if (!priceForm.productId) return;
-    props.savePrice(priceForm);
-    setPriceForm(newPrice());
-  };
-  const saveRule = () => {
-    if (!ruleForm.productId) return;
-    props.saveVisibilityRule(ruleForm);
-    setRuleForm(newRule());
-  };
-  const importJson = async (file: File | undefined) => {
-    if (!file) return;
-    setIsImporting(true);
-    try {
-      await props.importProductsJson(file);
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "匯入商品 JSON 失敗。");
-    } finally {
-      setIsImporting(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
-
-  return (
-    <section className="fullSpan">
-      <div className="sectionHeader">
-        <div><h2>商品 / 價格 / 客戶類別設定</h2><p>集中維護商品主檔、下單狀態、價格套用對象與商品可見規則。</p></div>
-        <div className="headerActions">
-          <button onClick={props.exportProductsJson}><Download size={18} /> 匯出商品 JSON</button>
-          <button disabled={isImporting} onClick={() => fileInputRef.current?.click()}><Upload size={18} /> {isImporting ? "匯入中" : "匯入商品 JSON"}</button>
-          <button onClick={() => setProductForm(newProduct())}><Plus size={18} /> 新增商品</button>
-          <input ref={fileInputRef} className="hiddenFileInput" type="file" accept="application/json,.json" onChange={(event) => void importJson(event.target.files?.[0])} />
-        </div>
-      </div>
-      <div className="settingsGrid">
-        <div className="adminTable">
-          <div className="tableHead productColumns"><span>SKU</span><span>商品</span><span>下單</span><span>價格</span><span>庫存</span><span>操作</span></div>
-          {props.products.map((product) => (
-            <div className="tableRow productColumns" key={product.id}>
-              <strong>{product.sku}</strong>
-              <span>{product.name}<small>{product.brand} / {product.category}</small></span>
-              <label className="switchLabel"><input type="checkbox" checked={product.isOrderable} onChange={(event) => props.toggleProductOrderable(product, event.target.checked)} />{product.isOrderable ? "可下單" : "不可下單"}</label>
-              <span>{props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆</span>
-              <span>{product.stockQuantity}</span>
-              <button onClick={() => setProductForm(product)}>編輯</button>
-            </div>
-          ))}
-        </div>
-        <div className="editPanel">
-          <h3>{props.products.some((product) => product.id === productForm.id) ? "編輯商品" : "新增商品"}</h3>
-          <label>SKU<input value={productForm.sku} onChange={(event) => setProductForm({ ...productForm, sku: event.target.value })} /></label>
-          <label>商品名稱<input value={productForm.name} onChange={(event) => setProductForm({ ...productForm, name: event.target.value })} /></label>
-          <div className="formSplit">
-            <label>品牌<input value={productForm.brand} onChange={(event) => setProductForm({ ...productForm, brand: event.target.value })} /></label>
-            <label>系列<input value={productForm.series} onChange={(event) => setProductForm({ ...productForm, series: event.target.value })} /></label>
-          </div>
-          <label>分類<input value={productForm.category} onChange={(event) => setProductForm({ ...productForm, category: event.target.value })} /></label>
-          <label>商品圖片 URL<input value={productForm.image} onChange={(event) => setProductForm({ ...productForm, image: event.target.value })} /></label>
-          <label>描述<textarea value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} /></label>
-          <div className="formSplit">
-            <label>銷售單位<input value={productForm.salesUnit} onChange={(event) => setProductForm({ ...productForm, salesUnit: event.target.value })} /></label>
-            <label>箱入數<input value={productForm.packSize} onChange={(event) => setProductForm({ ...productForm, packSize: event.target.value })} /></label>
-          </div>
-          <div className="formSplit">
-            <label>MOQ<input type="number" min="1" value={productForm.moq} onChange={(event) => setProductForm({ ...productForm, moq: Number(event.target.value) })} /></label>
-            <label>下單倍數<input type="number" min="1" value={productForm.orderIncrement} onChange={(event) => setProductForm({ ...productForm, orderIncrement: Number(event.target.value) })} /></label>
-          </div>
-          <label>目前庫存<input type="number" min="0" value={productForm.stockQuantity} onChange={(event) => setProductForm({ ...productForm, stockQuantity: Number(event.target.value) })} /></label>
-          <label className="switchLabel"><input type="checkbox" checked={productForm.isOrderable} onChange={(event) => setProductForm({ ...productForm, isOrderable: event.target.checked })} />可下單</label>
-          <label className="switchLabel"><input type="checkbox" checked={productForm.isActive} onChange={(event) => setProductForm({ ...productForm, isActive: event.target.checked })} />啟用商品</label>
-          <button className="primaryAction" onClick={saveProduct}><Save size={18} /> 儲存商品</button>
-        </div>
-      </div>
-      <div className="ruleGrid">
-        <div className="editPanel">
-          <h3>價格設定</h3>
-          <label>商品<select value={priceForm.productId} onChange={(event) => setPriceForm({ ...priceForm, productId: event.target.value })}>{props.products.map((product) => <option key={product.id} value={product.id}>{product.sku} - {product.name}</option>)}</select></label>
-          <label>價格類型<select value={priceForm.scopeType} onChange={(event) => setPriceScope(event.target.value as PriceScope)}>{(Object.keys(priceScopeText) as PriceScope[]).map((scope) => <option key={scope} value={scope}>{priceScopeText[scope]}</option>)}</select></label>
-          {priceForm.scopeType === "customer_tier" ? <label>客戶等級<select value={priceForm.scopeId ?? ""} onChange={(event) => setPriceForm({ ...priceForm, scopeId: event.target.value })}>{props.tiers.map((tier) => <option key={tier.id} value={tier.id}>{tier.name}</option>)}</select></label> : null}
-          {priceForm.scopeType === "customer" ? <label>指定客戶<select value={priceForm.scopeId ?? ""} onChange={(event) => setPriceForm({ ...priceForm, scopeId: event.target.value })}>{customers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label> : null}
-          <label>價格<input type="number" min="0" value={priceForm.price} onChange={(event) => setPriceForm({ ...priceForm, price: Number(event.target.value) })} /></label>
-          <label className="switchLabel"><input type="checkbox" checked={priceForm.isActive} onChange={(event) => setPriceForm({ ...priceForm, isActive: event.target.checked })} />啟用價格</label>
-          <button className="primaryAction" onClick={savePrice}><Save size={18} /> 儲存價格</button>
-        </div>
-        <div className="adminTable compactTable">
-          <div className="tableHead priceColumns"><span>商品</span><span>對象</span><span>價格</span><span>操作</span></div>
-          {props.prices.map((price) => (
-            <div className="tableRow priceColumns" key={price.id}>
-              <span>{productName(price.productId)}</span>
-              <span>{priceScopeText[price.scopeType]}<small>{targetName(price.scopeType, price.scopeId)}</small></span>
-              <strong>{money(price.price)}</strong>
-              <button onClick={() => setPriceForm(price)}>編輯</button>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="ruleGrid">
-        <div className="editPanel">
-          <h3>商品可見 / 客戶類別</h3>
-          <label>商品<select value={ruleForm.productId} onChange={(event) => setRuleForm({ ...ruleForm, productId: event.target.value })}>{props.products.map((product) => <option key={product.id} value={product.id}>{product.sku} - {product.name}</option>)}</select></label>
-          <label>規則<select value={ruleForm.ruleType} onChange={(event) => setRuleType(event.target.value as VisibilityRuleType)}>{(Object.keys(ruleText) as VisibilityRuleType[]).map((rule) => <option key={rule} value={rule}>{ruleText[rule]}</option>)}</select></label>
-          {ruleForm.ruleType === "visible_to_customer_tier" ? <label>客戶等級<select value={ruleForm.scopeId ?? ""} onChange={(event) => setRuleForm({ ...ruleForm, scopeId: event.target.value })}>{props.tiers.map((tier) => <option key={tier.id} value={tier.id}>{tier.name}</option>)}</select></label> : null}
-          {(ruleForm.ruleType === "visible_to_customer" || ruleForm.ruleType === "hidden_from_customer") ? <label>指定客戶<select value={ruleForm.scopeId ?? ""} onChange={(event) => setRuleForm({ ...ruleForm, scopeId: event.target.value })}>{customers.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}</select></label> : null}
-          <label className="switchLabel"><input type="checkbox" checked={ruleForm.isActive} onChange={(event) => setRuleForm({ ...ruleForm, isActive: event.target.checked })} />啟用規則</label>
-          <button className="primaryAction" onClick={saveRule}><Save size={18} /> 儲存規則</button>
-        </div>
-        <div className="adminTable compactTable">
-          <div className="tableHead visibilityColumns"><span>商品</span><span>規則</span><span>狀態</span><span>操作</span></div>
-          {props.rules.map((rule) => (
-            <div className="tableRow visibilityColumns" key={rule.id}>
-              <span>{productName(rule.productId)}</span>
-              <span>{ruleText[rule.ruleType]}<small>{targetName(rule.ruleType, rule.scopeId)}</small></span>
-              <span>{rule.isActive ? "啟用" : "停用"}</span>
-              <button onClick={() => setRuleForm(rule)}>編輯</button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -1463,7 +1062,7 @@ function ProductSettingsManagerV2(props: {
           <div className="productPickerList">
             {filteredProducts.map((product) => (
               <button className={product.id === selectedProductId ? "productPick active" : "productPick"} key={product.id} onClick={() => selectProduct(product)}>
-                <strong>{product.sku}</strong><span>{product.name}</span><small>{product.isOrderable ? "可下單" : "不可下單"} / 價格 {props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆 / 庫存 {product.stockQuantity}</small>
+                <strong>{product.sku}</strong><span>{product.name}</span><small>{product.isOrderable ? "可下單" : "不可下單"} / 價格 {props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆 / 庫存 {product.stockQuantity ?? 0}</small>
               </button>
             ))}
           </div>
@@ -1489,7 +1088,7 @@ function ProductSettingsManagerV2(props: {
               <label>描述<textarea value={productForm.description} onChange={(event) => setProductForm({ ...productForm, description: event.target.value })} /></label>
               <div className="formSplit"><label>銷售單位<input value={productForm.salesUnit} onChange={(event) => setProductForm({ ...productForm, salesUnit: event.target.value })} /></label><label>數量規格<input value={productForm.packSize} onChange={(event) => setProductForm({ ...productForm, packSize: event.target.value })} /></label></div>
               <div className="formSplit"><label>起訂量<input type="number" min="1" value={productForm.moq} onChange={(event) => setProductForm({ ...productForm, moq: Number(event.target.value) })} /></label><label>下單倍數<input type="number" min="1" value={productForm.orderIncrement} onChange={(event) => setProductForm({ ...productForm, orderIncrement: Number(event.target.value) })} /></label></div>
-              <label>目前庫存<input type="number" min="0" value={productForm.stockQuantity} onChange={(event) => setProductForm({ ...productForm, stockQuantity: Number(event.target.value) })} /></label>
+              <label>目前庫存<input type="number" min="0" value={productForm.stockQuantity ?? 0} onChange={(event) => setProductForm({ ...productForm, stockQuantity: Number(event.target.value) })} /></label>
               <label className="switchLabel"><input type="checkbox" checked={productForm.isOrderable} onChange={(event) => setProductForm({ ...productForm, isOrderable: event.target.checked })} />可下單</label>
               <button className="primaryAction" onClick={saveProduct}><Save size={18} /> 儲存商品</button>
             </div>
@@ -1533,32 +1132,18 @@ function ProductSettingsManagerV2(props: {
   );
 }
 
-function ProductRuleManager(props: {
-  products: Product[];
-  prices: ProductPrice[];
-  rules: VisibilityRule[];
-  toggleProductOrderable: (product: Product, isOrderable: boolean) => void;
-}) {
-  return (
-    <section className="fullSpan"><div className="sectionHeader"><div><h2>商品與規則</h2><p>商品可見性與可下單狀態分開管理。</p></div></div>
-      <div className="adminTable"><div className="tableHead productColumns"><span>SKU</span><span>商品</span><span>狀態</span><span>價格規則</span><span>可見性</span></div>
-        {props.products.map((product) => <div className="tableRow productColumns" key={product.id}><strong>{product.sku}</strong><span>{product.name}</span><label className="switchLabel"><input type="checkbox" checked={product.isOrderable} onChange={(event) => props.toggleProductOrderable(product, event.target.checked)} />{product.isOrderable ? "可下單" : "不可下單"}</label><span>{props.prices.filter((price) => price.productId === product.id && price.isActive).length} 筆</span><span>{props.rules.filter((rule) => rule.productId === product.id && rule.isActive).length} 筆</span></div>)}
-      </div>
-    </section>
-  );
-}
-
 function OrderReviewManager(props: {
   users: User[];
   orders: Order[];
-  reviseOrder: (orderId: string, revision: OrderRevisionInput) => void;
-  updateOrderStatus: (orderId: string, orderStatus: OrderStatus, adminNote: string) => void;
-  markPaid: (orderId: string) => void;
+  reviseOrder: (orderId: string, revision: OrderRevisionInput) => Promise<void>;
+  updateOrderStatus: (orderId: string, orderStatus: OrderStatus, adminNote: string) => Promise<void>;
+  markPaid: (orderId: string) => Promise<void>;
   exportOrders: () => void;
 }) {
   const [selectedId, setSelectedId] = useState(props.orders[0]?.id ?? "");
   const selectedOrder = props.orders.find((order) => order.id === selectedId) ?? props.orders[0] ?? null;
   const [draft, setDraft] = useState<OrderRevisionInput | null>(null);
+  const [pendingAction, setPendingAction] = useState("");
   const statusActions: { status: OrderStatus; label: string }[] = [
     { status: "admin_reviewing", label: "審核中" },
     { status: "confirmed", label: "確認訂單" },
@@ -1620,8 +1205,23 @@ function OrderReviewManager(props: {
     setDraft({ ...revisionDraft, [field]: value });
   }
 
+  async function runAction(key: string, action: () => Promise<void>) {
+    if (pendingAction) return;
+    setPendingAction(key);
+    try {
+      await action();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "訂單操作失敗。");
+    } finally {
+      setPendingAction("");
+    }
+  }
+
   function saveRevision() {
-    props.reviseOrder(selectedOrder.id, revisionDraft);
+    void runAction("revision", async () => {
+      await props.reviseOrder(selectedOrder.id, revisionDraft);
+      setDraft(null);
+    });
   }
 
   return (
@@ -1635,7 +1235,7 @@ function OrderReviewManager(props: {
           <div className="tableHead orderListColumns"><span>訂單</span><span>客戶</span><span>狀態</span><span>總計</span></div>
           {props.orders.map((order) => (
             <button className={`tableRow orderListColumns orderSelectRow ${order.id === selectedOrder.id ? "active" : ""}`} key={order.id} onClick={() => selectOrder(order)}>
-              <strong>{order.orderNo}<small>{order.submittedAt}</small></strong>
+              <strong>{order.orderNo}<small>{formatDateTime(order.submittedAt)}</small></strong>
               <span>{props.users.find((user) => user.id === order.customerId)?.name ?? order.customerId}</span>
               <span>{statusText[order.orderStatus]}</span>
               <strong>{money(order.grandTotal)}</strong>
@@ -1647,8 +1247,8 @@ function OrderReviewManager(props: {
           <div className="sectionHeader compactHeader">
             <div><h3>{selectedOrder.orderNo}</h3><p>{customer?.name ?? selectedOrder.customerId} · {statusText[selectedOrder.orderStatus]}</p></div>
             <div className="rowActions">
-              {statusActions.map((action) => <button key={action.status} disabled={selectedOrder.orderStatus === action.status} onClick={() => props.updateOrderStatus(selectedOrder.id, action.status, revisionDraft.adminNote)}>{action.label}</button>)}
-              <button onClick={() => props.markPaid(selectedOrder.id)}><CreditCard size={16} /> 已付款</button>
+              {statusActions.map((action) => <button key={action.status} disabled={Boolean(pendingAction) || selectedOrder.orderStatus === action.status} onClick={() => void runAction(`status-${action.status}`, () => props.updateOrderStatus(selectedOrder.id, action.status, revisionDraft.adminNote))}>{pendingAction === `status-${action.status}` ? "更新中..." : action.label}</button>)}
+              <button disabled={Boolean(pendingAction) || selectedOrder.paymentStatus === "paid"} onClick={() => void runAction("payment", () => props.markPaid(selectedOrder.id))}><CreditCard size={16} /> {pendingAction === "payment" ? "更新中..." : selectedOrder.paymentStatus === "paid" ? "已付款" : "標記付款"}</button>
             </div>
           </div>
 
@@ -1690,7 +1290,7 @@ function OrderReviewManager(props: {
             <label>調整金額<input type="number" value={revisionDraft.adjustmentTotal} onChange={(event) => updateDraft("adjustmentTotal", Number(event.target.value))} /></label>
             <label>修訂摘要<input value={revisionDraft.changeSummary} onChange={(event) => updateDraft("changeSummary", event.target.value)} /></label>
             <div className="totalStack"><span>品項小計 {money(draftSubtotal)}</span><strong>修訂後總計 {money(draftTotal)}</strong></div>
-            <button className="primaryAction" onClick={saveRevision}><History size={18} /> 儲存修訂</button>
+            <button className="primaryAction" disabled={Boolean(pendingAction)} onClick={saveRevision}><History size={18} /> {pendingAction === "revision" ? "儲存中..." : "儲存修訂"}</button>
           </div>
 
           <div className="revisionHistory">
@@ -1698,28 +1298,12 @@ function OrderReviewManager(props: {
             {selectedOrder.revisions.length === 0 ? <p className="empty">尚無修訂紀錄。</p> : selectedOrder.revisions.map((revision) => (
               <div className="historyItem" key={revision.id}>
                 <strong>{revision.changeSummary}</strong>
-                <span>{revision.createdAt} · {revision.revisedBy} · {money(revision.previousTotal)} → {money(revision.newTotal)}</span>
-                {revision.customerAcceptanceRequired ? <small>{revision.customerAcceptedAt ? `客戶已接受：${revision.customerAcceptedAt}` : "等待客戶接受修訂"}</small> : <small>無需客戶再次接受</small>}
+                <span>{formatDateTime(revision.createdAt)} · {revision.revisedBy} · {money(revision.previousTotal)} → {money(revision.newTotal)}</span>
+                {revision.customerAcceptanceRequired ? <small>{revision.customerAcceptedAt ? `客戶已接受：${formatDateTime(revision.customerAcceptedAt)}` : "等待客戶接受修訂"}</small> : <small>無需客戶再次接受</small>}
               </div>
             ))}
           </div>
         </div>
-      </div>
-    </section>
-  );
-}
-
-function OrderManager(props: {
-  users: User[];
-  orders: Order[];
-  reviseOrder: (orderId: string) => void;
-  markPaid: (orderId: string) => void;
-  exportOrders: () => void;
-}) {
-  return (
-    <section className="fullSpan"><div className="sectionHeader"><div><h2>訂單審核</h2><p>管理員可修訂訂單、建立修訂紀錄，付款狀態獨立管理。</p></div><button onClick={props.exportOrders}><Download size={18} /> 匯出 Excel</button></div>
-      <div className="adminTable"><div className="tableHead orderColumns"><span>訂單編號</span><span>客戶</span><span>訂單狀態</span><span>付款</span><span>總計</span><span>操作</span></div>
-        {props.orders.length === 0 ? <p className="empty tableEmpty">尚無訂單，請先以客戶身分送出訂單。</p> : props.orders.map((order) => <div className="tableRow orderColumns" key={order.id}><strong>{order.orderNo}</strong><span>{props.users.find((user) => user.id === order.customerId)?.name}</span><span>{statusText[order.orderStatus]}</span><span>{paymentText[order.paymentStatus]}</span><strong>{money(order.grandTotal)}</strong><div className="rowActions"><button onClick={() => props.reviseOrder(order.id)}><History size={16} /> 修訂</button><button onClick={() => props.markPaid(order.id)}><CreditCard size={16} /> 已付款</button></div></div>)}
       </div>
     </section>
   );
@@ -1770,17 +1354,23 @@ function TierManager(props: { tiers: CustomerTier[]; saveTier: (tier: CustomerTi
   );
 }
 
-function UserManager(props: { users: User[]; tiers: CustomerTier[]; currentUserId: string; saveUser: (user: User & { password?: string }) => void; deleteUser: (user: User) => Promise<void> }) {
-  const newUser = (): User & { password?: string } => ({ id: `user-${Date.now()}`, loginId: "", name: "", email: "", password: "changeme123", role: "customer", customerTierId: props.tiers[0]?.id, allowedPaymentMethods: ["credit_card"], isActive: true, taxId: "", companyName: "", contactName: "", shippingAddress: "", shippingDetail: "" });
+function UserManager(props: { users: User[]; tiers: CustomerTier[]; currentUserId: string; saveUser: (user: User & { password?: string }) => Promise<void>; deleteUser: (user: User) => Promise<void> }) {
+  const newUser = (): User & { password?: string } => ({ id: `user-${Date.now()}`, loginId: "", name: "", email: "", password: "", role: "customer", customerTierId: props.tiers[0]?.id, allowedPaymentMethods: ["credit_card"], isActive: true, taxId: "", companyName: "", contactName: "", shippingAddress: "", shippingDetail: "" });
   const [editing, setEditing] = useState<User & { password?: string }>(newUser);
   const activeUsers = props.users.filter((user) => user.isActive);
-  function toggleMethod(method: PaymentMethod) {
-    setEditing((user) => ({ ...user, allowedPaymentMethods: user.allowedPaymentMethods.includes(method) ? user.allowedPaymentMethods.filter((entry) => entry !== method) : [...user.allowedPaymentMethods, method] }));
-  }
-  function save() {
+  async function save() {
     if (!editing.name.trim() || !editing.loginId.trim()) return;
-    props.saveUser(editing);
-    setEditing(newUser());
+    const existing = props.users.some((user) => user.id === editing.id);
+    if ((!existing || editing.password) && String(editing.password ?? "").length < 12) {
+      window.alert("密碼至少需要 12 個字元。");
+      return;
+    }
+    try {
+      await props.saveUser(editing);
+      setEditing(newUser());
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "儲存帳號失敗。");
+    }
   }
   async function remove(user: User) {
     const confirmed = window.confirm(`確定要刪除帳號「${user.name}」？\n\n刪除後此帳號不能再登入；過去訂單紀錄不會刪除。`);
@@ -1800,7 +1390,7 @@ function UserManager(props: { users: User[]; tiers: CustomerTier[]; currentUserI
           <label>登入 ID<input value={editing.loginId} onChange={(event) => setEditing({ ...editing, loginId: event.target.value })} placeholder="例如：admin、hotel01" /></label>
           <label>帳號顯示名稱<input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} placeholder="例如：沐森旅店" /></label>
           <label>Email<input value={editing.email} onChange={(event) => setEditing({ ...editing, email: event.target.value })} placeholder="通知用，可留空" /></label>
-          <label>密碼<input type="password" value={editing.password ?? ""} onChange={(event) => setEditing({ ...editing, password: event.target.value })} placeholder="留空代表不變更密碼" /></label>
+          <label>密碼<input type="password" minLength={12} value={editing.password ?? ""} onChange={(event) => setEditing({ ...editing, password: event.target.value })} placeholder="新帳號必填，至少 12 字元" /></label>
           <label>角色<select value={editing.role} onChange={(event) => setEditing({ ...editing, role: event.target.value as Role })}><option value="admin">管理員</option><option value="customer">客戶</option></select></label>
           {editing.role === "customer" ? <>
             <label>客戶等級<select value={editing.customerTierId} onChange={(event) => setEditing({ ...editing, customerTierId: event.target.value })}>{props.tiers.map((tier) => <option key={tier.id} value={tier.id}>{tier.name}</option>)}</select></label>
